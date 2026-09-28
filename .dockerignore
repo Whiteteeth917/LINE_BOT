@@ -1,0 +1,8 @@
+node_modules
+.env
+.git
+data
+backtest/cache
+backtest/last_trades.json
+Dockerfile
+docker-compose.yml

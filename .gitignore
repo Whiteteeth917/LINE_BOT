@@ -1,0 +1,5 @@
+node_modules/
+.env
+data/subscriber.json
+data/today.json
+backtest/cache/

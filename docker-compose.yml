@@ -1,0 +1,26 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      # 訂閱者 userId 與「設定」內容，重建容器後仍保留
+      - ./data:/app/data
+      # 歷史行情快取（體積大且會用 backfillHistory 更新，不打包進映像檔）
+      - ./backtest/cache:/app/backtest/cache
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    command: http bot:3000
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      # ngrok 本機管理頁，可在 http://localhost:4040 查看公開網址與請求紀錄
+      - "4040:4040"
+    depends_on:
+      - bot
+    restart: unless-stopped
