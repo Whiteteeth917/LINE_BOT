@@ -4,6 +4,7 @@ const { fetchTxfSummary } = require('./twFutures');
 const { loadAllDays } = require('../backtest/loadCache');
 const { buildSeriesByCode } = require('../backtest/buildSeries');
 const { annotateSeries } = require('../backtest/indicators');
+const { loadNameMap, stockLabel } = require('./stockNames');
 
 function fmt(n) {
   return n == null ? '－' : n.toFixed(2);
@@ -24,9 +25,9 @@ function getMa20Map(codes) {
   return map;
 }
 
-function buildStockLine(code, quote, level, ma20) {
-  if (!quote) return `${code}　報價取得失敗`;
-  if (!level || level.error) return `${code}　現價 ${fmt(quote.close)}（無支撐壓力資料）`;
+function buildStockLine(label, quote, level, ma20) {
+  if (!quote) return `${label}　報價取得失敗`;
+  if (!level || level.error) return `${label}　現價 ${fmt(quote.close)}（無支撐壓力資料）`;
 
   const flags = [];
   if (level.stopLoss != null && quote.close <= level.stopLoss) flags.push('🔴 已跌破停損！');
@@ -35,7 +36,7 @@ function buildStockLine(code, quote, level, ma20) {
 
   const sign = quote.changePct > 0 ? '+' : '';
   const flagText = flags.length ? `　${flags.join('　')}` : '';
-  return `${code}　現價 ${fmt(quote.close)}（${sign}${quote.changePct.toFixed(2)}%）｜20MA ${fmt(ma20)}｜壓力 ${fmt(level.r1)}｜停損 ${fmt(level.stopLoss)}${flagText}`;
+  return `${label}　現價 ${fmt(quote.close)}（${sign}${quote.changePct.toFixed(2)}%）｜20MA ${fmt(ma20)}｜壓力 ${fmt(level.r1)}｜停損 ${fmt(level.stopLoss)}${flagText}`;
 }
 
 // 回傳 { text, hasBreach }；hasBreach 用來讓排程決定「平靜時是否還要推播」
@@ -48,6 +49,7 @@ async function buildIntradayMessage(today) {
     fetchTxfSummary().catch(() => null),
   ]);
   const ma20Map = getMa20Map(today.watchlist);
+  const nameMap = loadNameMap();
 
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, '0');
@@ -58,7 +60,7 @@ async function buildIntradayMessage(today) {
     : '台指期：資料取得失敗';
 
   const stockLines = today.watchlist.map((code) =>
-    buildStockLine(code, quotes.get(code), levelByCode.get(code), ma20Map.get(code))
+    buildStockLine(stockLabel(code, nameMap), quotes.get(code), levelByCode.get(code), ma20Map.get(code))
   );
 
   const hasBreach = today.watchlist.some((code) => {

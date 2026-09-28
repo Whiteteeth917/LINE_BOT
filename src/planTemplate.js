@@ -11,15 +11,15 @@ function fmt(n) {
   return n == null ? '－' : n.toFixed(2);
 }
 
-// levels: [{ code, ohlcDate, pivot, r1, s1, stopLoss, error }]
+// levels: [{ code, label, ohlcDate, pivot, r1, s1, stopLoss, error }]
 function buildTodaySection(today, levels) {
   if (!today.watchlist.length) {
     return '【今日重點】\n（尚未設定觀察標的，請先傳送「設定」指令，例如：\n設定\n觀察 2330,2454\n停損規則 2）';
   }
 
   const rows = levels.map((l) => {
-    if (l.error) return `${l.code}　資料取得失敗（${l.error}），請自行查價`;
-    return `${l.code}　前收 ${fmt(l.close)}｜樞紐 ${fmt(l.pivot)}｜壓力 ${fmt(l.r1)}｜支撐 ${fmt(l.s1)}｜停損 ${fmt(l.stopLoss)}`;
+    if (l.error) return `${l.label}　資料取得失敗（${l.error}），請自行查價`;
+    return `${l.label}　前收 ${fmt(l.close)}｜樞紐 ${fmt(l.pivot)}｜壓力 ${fmt(l.r1)}｜支撐 ${fmt(l.s1)}｜停損 ${fmt(l.stopLoss)}`;
   });
 
   const note = today.note ? `\n備註：${today.note}` : '';

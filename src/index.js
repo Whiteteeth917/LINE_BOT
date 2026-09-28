@@ -18,6 +18,7 @@ const { screenBySector } = require('../backtest/sectorScreen');
 const { formatSectorResult } = require('../backtest/formatSectorResult');
 const { listCategories } = require('../backtest/sectorLookup');
 const { buildCandlestickUrl } = require('./candlestickChart');
+const { loadNameMap, stockLabel } = require('./stockNames');
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -159,8 +160,9 @@ async function handleEvent(event) {
 }
 
 function buildTodayEcho(today) {
+  const nameMap = loadNameMap();
   return [
-    `觀察：${today.watchlist.join('、') || '（未設定）'}`,
+    `觀察：${today.watchlist.map((code) => stockLabel(code, nameMap)).join('、') || '（未設定）'}`,
     `停損規則：支撐下方 ${today.stopLossPct}%`,
     today.note ? `備註：${today.note}` : null,
   ].filter(Boolean).join('\n');
