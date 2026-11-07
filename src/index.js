@@ -274,6 +274,16 @@ function warmupCache() {
 
 app.get('/healthz', (_req, res) => res.json({ ok: true, cacheReady: warmupDone }));
 
+// 診斷用：確認在部署環境裡報價來源是否可用、實際用的是哪個來源（只回傳公開行情，不含任何設定）
+app.get('/diag/quotes', async (_req, res) => {
+  const { fetchQuotes } = require('./intradayQuotes');
+  const [quotes, txf] = await Promise.all([
+    fetchQuotes(['2330']).then((m) => Object.fromEntries(m)).catch((e) => ({ error: e.message })),
+    fetchTxfSummary().catch((e) => ({ error: e.message })),
+  ]);
+  res.json({ quotes, txf });
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);

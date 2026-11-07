@@ -1,9 +1,13 @@
-// 盤中個股即時（約15分鐘延遲）報價，用 TradingView 公開 scanner 端點（免費、不需金鑰，非官方 API）
-async function fetchQuotes(codes) {
-  if (!codes.length) return new Map();
+// 盤中個股報價（約15分鐘延遲）。
+// 主要來源：TradingView 公開 scanner 端點（免費、不需金鑰，非官方 API）。
+// 備援來源：證交所「基本市況報導」MIS API。TradingView 會擋部分雲端主機 IP（例如 Render），
+// 失敗時自動改用官方來源，兩邊回傳格式一致：Map<code, { close, changePct, source }>。
+const TV_URL = 'https://scanner.tradingview.com/global/scan';
+const TWSE_MIS_URL = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
 
+async function fetchFromTradingView(codes) {
   const tickers = codes.map((c) => `TWSE:${c}`);
-  const res = await fetch('https://scanner.tradingview.com/global/scan', {
+  const res = await fetch(TV_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -15,15 +19,66 @@ async function fetchQuotes(codes) {
       symbols: { tickers, query: { types: [] } },
       columns: ['close', 'change'],
     }),
+    signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`TradingView HTTP ${res.status}`);
   const json = await res.json();
 
   const map = new Map();
   for (const row of json.data || []) {
     const code = row.s.replace('TWSE:', '');
     const [close, changePct] = row.d;
-    map.set(code, { close, changePct });
+    if (close != null) map.set(code, { close, changePct, source: 'tradingview' });
+  }
+  return map;
+}
+
+function toNum(s) {
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function fetchFromTwseMis(codes) {
+  // 同時查上市(tse)與上櫃(otc)，不存在的那一邊 MIS 會直接略過
+  const exCh = codes.flatMap((c) => [`tse_${c}.tw`, `otc_${c}.tw`]).join('|');
+  const url = `${TWSE_MIS_URL}?ex_ch=${encodeURIComponent(exCh)}&json=1&delay=0&_=${Date.now()}`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://mis.twse.com.tw/stock/index.jsp' },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`TWSE MIS HTTP ${res.status}`);
+  const json = await res.json();
+
+  const map = new Map();
+  for (const row of json.msgArray || []) {
+    const prevClose = toNum(row.y);
+    // z＝最近成交價；剛好沒有成交時會是 "-"，改用最佳買價第一檔
+    const close = toNum(row.z) ?? toNum((row.b || '').split('_')[0]);
+    if (close == null) continue;
+    const changePct = prevClose ? ((close - prevClose) / prevClose) * 100 : 0;
+    map.set(row.c, { close, changePct, source: 'twse-mis' });
+  }
+  return map;
+}
+
+async function fetchQuotes(codes) {
+  if (!codes.length) return new Map();
+
+  let map = new Map();
+  try {
+    map = await fetchFromTradingView(codes);
+  } catch (err) {
+    console.warn('[fetchQuotes] TradingView 失敗，改用證交所 MIS:', err.message);
+  }
+
+  const missing = codes.filter((c) => !map.has(c));
+  if (missing.length) {
+    try {
+      const fallback = await fetchFromTwseMis(missing);
+      for (const [code, q] of fallback) map.set(code, q);
+    } catch (err) {
+      console.error('[fetchQuotes] 證交所 MIS 也失敗:', err.message);
+    }
   }
   return map;
 }
