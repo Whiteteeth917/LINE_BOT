@@ -1,7 +1,7 @@
 const { buildLevelsForWatchlist } = require('./levels');
 const { fetchQuotes } = require('./intradayQuotes');
 const { fetchTxfSummary } = require('./twFutures');
-const { loadAllDays } = require('../backtest/loadCache');
+const { loadRecentDays } = require('../backtest/loadCache');
 const { buildSeriesByCode } = require('../backtest/buildSeries');
 const { annotateSeries } = require('../backtest/indicators');
 const { loadNameMap, stockLabel } = require('./stockNames');
@@ -13,7 +13,7 @@ function fmt(n) {
 // 用已收盤資料算每檔股票目前的20日均線（跟回測「跌破20日均線才算轉弱」用同一套邏輯，
 // 不受盤中即時價的雜訊影響）
 function getMa20Map(codes) {
-  const days = loadAllDays();
+  const days = loadRecentDays(30); // 20 日均線只需要最近一個多月
   const seriesMap = buildSeriesByCode(days, codes);
   const map = new Map();
   for (const code of codes) {

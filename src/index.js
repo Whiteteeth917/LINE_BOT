@@ -18,6 +18,7 @@ const { screenBySector } = require('../backtest/sectorScreen');
 const { formatSectorResult } = require('../backtest/formatSectorResult');
 const { listCategories } = require('../backtest/sectorLookup');
 const { buildCandlestickUrls } = require('./candlestickChart');
+const { buildChartData, renderChartPage, renderNotFound, isValidCode } = require('./chartPage');
 const { loadNameMap, stockLabel } = require('./stockNames');
 const { backfillRecentDays } = require('../backtest/backfillHistory');
 
@@ -36,7 +37,33 @@ const INTRADAY_WINDOW = [{ h: 9, m: 30 }, { h: 13, m: 0 }];
 const client = new Client(lineConfig);
 const app = express();
 
+// 對外網址（互動圖表連結用）。Render 會自動注入 RENDER_EXTERNAL_URL；其他平台請設定 PUBLIC_BASE_URL。
+function publicBaseUrl() {
+  const base = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+  return base.replace(/\/+$/, '');
+}
+
+function chartPageUrl(code, stopLossPct) {
+  return `${publicBaseUrl()}/chart/${encodeURIComponent(code)}?sl=${encodeURIComponent(stopLossPct)}`;
+}
+
 app.get('/', (_req, res) => res.send('LINE trading plan bot is running.'));
+
+// 互動 K 線頁（任何人都能開，不含使用者資料；停損比例由網址參數帶入）
+app.get('/chart/:code', async (req, res) => {
+  const code = String(req.params.code).toUpperCase();
+  if (!isValidCode(code)) return res.status(400).type('html').send(renderNotFound(code));
+  const sl = Number(req.query.sl);
+  const stopLossPct = Number.isFinite(sl) && sl > 0 && sl < 100 ? sl : 20;
+  try {
+    const data = await buildChartData(code, stopLossPct);
+    if (!data) return res.status(404).type('html').send(renderNotFound(code));
+    res.set('Cache-Control', 'public, max-age=300').type('html').send(renderChartPage(data));
+  } catch (err) {
+    console.error('[chartPage] 失敗:', err);
+    res.status(500).type('html').send(renderNotFound(code));
+  }
+});
 
 app.post('/webhook', middleware(lineConfig), async (req, res) => {
   try {
@@ -49,16 +76,34 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 });
 
 async function handleEvent(event) {
-  if (event.type !== 'message' || event.message.type !== 'text') return;
+  const userId = event.source && event.source.userId;
 
-  const userId = event.source.userId;
-  if (userId) store.saveSubscriberId(userId);
+  if (event.type === 'follow' && userId) {
+    await store.addSubscriber(userId);
+    return client.replyMessage(event.replyToken, { type: 'text', text: `歡迎使用！\n\n${helpText()}` });
+  }
+  if (event.type === 'unfollow' && userId) {
+    return store.removeSubscriber(userId);
+  }
+  if (event.type !== 'message' || event.message.type !== 'text' || !userId) return;
 
+  await store.addSubscriber(userId);
   const text = event.message.text.trim();
+
+  const pushToggle = text.match(/^(每日|盤中)推播\s*(開啟|關閉|開|關)$/);
+  if (pushToggle) {
+    const field = pushToggle[1] === '每日' ? 'dailyPush' : 'intradayPush';
+    const on = pushToggle[2].startsWith('開');
+    await store.saveUser(userId, { [field]: on });
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `已${on ? '開啟' : '關閉'}${pushToggle[1]}推播。`,
+    });
+  }
 
   if (isSettingMessage(text)) {
     const update = parseSettingMessage(text);
-    const today = store.saveToday(update);
+    const today = await store.saveUser(userId, update);
     return client.replyMessage(event.replyToken, {
       type: 'text',
       text: `已更新今日重點：\n${buildTodayEcho(today)}\n\n傳送「今日」可查看完整計畫。`,
@@ -66,7 +111,7 @@ async function handleEvent(event) {
   }
 
   if (['今日', '查看', '查詢', '計畫'].includes(text)) {
-    const message = await buildTodayPlanMessage();
+    const message = await buildTodayPlanMessage(await store.getUser(userId));
     return client.replyMessage(event.replyToken, { type: 'text', text: message });
   }
 
@@ -84,7 +129,7 @@ async function handleEvent(event) {
   }
 
   if (['盤中', '部位', '檢查'].includes(text)) {
-    const today = store.getToday();
+    const today = await store.getUser(userId);
     if (!today.watchlist.length) {
       return client.replyMessage(event.replyToken, {
         type: 'text',
@@ -119,8 +164,9 @@ async function handleEvent(event) {
   }
 
   if (/^k\s*線圖?/i.test(text)) {
+    const user = await store.getUser(userId);
     const rest = text.replace(/^k\s*線圖?/i, '').trim();
-    let codes = rest ? rest.split(/[,、\s]+/).filter(Boolean) : store.getToday().watchlist;
+    let codes = rest ? rest.split(/[,、\s]+/).filter(Boolean).map((c) => c.toUpperCase()) : user.watchlist;
 
     if (!codes.length) {
       return client.replyMessage(event.replyToken, {
@@ -129,21 +175,26 @@ async function handleEvent(event) {
       });
     }
 
-    const truncated = codes.length > 5;
-    codes = codes.slice(0, 5);
+    const MAX_CHARTS = 10; // Flex carousel 上限 12 張，留一點餘裕
+    const truncated = codes.length > MAX_CHARTS;
+    codes = codes.slice(0, MAX_CHARTS).filter(isValidCode);
+    if (!codes.length) {
+      return client.replyMessage(event.replyToken, { type: 'text', text: '股票代號格式不正確，例如「K線 2330」。' });
+    }
 
     try {
+      const nameMap = loadNameMap();
       const urls = await buildCandlestickUrls(codes);
-      const messages = [];
-      codes.forEach((code, i) => {
-        if (urls[i]) {
-          messages.push({ type: 'image', originalContentUrl: urls[i], previewImageUrl: urls[i] });
-        } else {
-          messages.push({ type: 'text', text: `${code}　資料取得失敗或代號不存在。` });
-        }
-      });
-      if (truncated) messages.push({ type: 'text', text: '觀察名單超過5檔，僅顯示前5檔。' });
-      return client.replyMessage(event.replyToken, messages.slice(0, 5));
+      const bubbles = codes.map((code, i) =>
+        buildChartBubble(stockLabel(code, nameMap), urls[i], chartPageUrl(code, user.stopLossPct))
+      );
+      const messages = [{
+        type: 'flex',
+        altText: `K線圖：${codes.join('、')}`,
+        contents: { type: 'carousel', contents: bubbles },
+      }];
+      if (truncated) messages.push({ type: 'text', text: `一次最多顯示 ${MAX_CHARTS} 檔，僅顯示前 ${MAX_CHARTS} 檔。` });
+      return client.replyMessage(event.replyToken, messages);
     } catch (err) {
       console.error('[candlestickChart] 失敗:', err);
       return client.replyMessage(event.replyToken, { type: 'text', text: 'K線圖產生失敗，請稍後再試一次。' });
@@ -158,6 +209,53 @@ async function handleEvent(event) {
     type: 'text',
     text: '輸入「說明」查看使用方式。',
   });
+}
+
+// K 線卡片：上方是靜態圖（QuickChart），點圖或按鈕開啟互動圖表頁（已畫好支撐／壓力／停損線）
+function buildChartBubble(label, imageUrl, pageUrl) {
+  const bubble = {
+    type: 'bubble',
+    size: 'mega',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: label, weight: 'bold', size: 'lg' },
+        {
+          type: 'text',
+          text: imageUrl ? '近 60 日 K 線＋20 日均線' : '靜態圖產生失敗，可直接開啟互動圖表',
+          size: 'xs',
+          color: '#888888',
+          wrap: true,
+        },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        {
+          type: 'button',
+          style: 'primary',
+          color: '#b8322a',
+          height: 'sm',
+          action: { type: 'uri', label: '互動圖表（含支撐壓力）', uri: pageUrl },
+        },
+      ],
+    },
+  };
+  if (imageUrl) {
+    bubble.hero = {
+      type: 'image',
+      url: imageUrl,
+      size: 'full',
+      aspectRatio: '5:3',
+      aspectMode: 'fit',
+      action: { type: 'uri', uri: pageUrl },
+    };
+  }
+  return bubble;
 }
 
 function buildTodayEcho(today) {
@@ -188,22 +286,31 @@ function helpText() {
     '',
     '盤中 → 隨時查看台指期與觀察標的的即時報價（約15分鐘延遲），並標示是否跌破停損或20日均線',
     '',
-    'K線 [代號] → 查看K線圖（含20日均線），例如「K線 2330」；不加代號則顯示你觀察名單裡所有股票的K線圖（最多5檔）',
+    'K線 [代號] → 查看K線圖（含20日均線），例如「K線 2330」；不加代號則顯示你觀察名單裡所有股票（最多10檔）。按「互動圖表」可開啟已畫好支撐／壓力／停損線、可拖曳縮放的圖表',
+    '',
+    '每日推播 開／關、盤中推播 開／關 → 開關自動推播（盤中推播預設關閉）',
     '',
     '說明 / 指令 / help → 顯示這份指令列表',
     '',
     `【自動推播】每個交易日 ${PUSH_CRON}（${CRON_TIMEZONE}）推播一次每日計畫；`,
-    `盤中 09:30~13:00 每 30 分鐘（cron: ${INTRADAY_CRON}）推播一次部位檢查。`,
+    `盤中推播開啟時，09:30~13:00 每 30 分鐘（cron: ${INTRADAY_CRON}）推播一次部位檢查。`,
   ].join('\n');
 }
 
-async function buildTodayPlanMessage() {
-  const today = store.getToday();
-  const [levels, usMarket, economicEvents, txf] = await Promise.all([
-    buildLevelsForWatchlist(today.watchlist, today.stopLossPct),
+// 美股／總經事件／台指期跟使用者無關，排程推播時只抓一次，所有人共用
+async function fetchSharedMarketData() {
+  const [usMarket, economicEvents, txf] = await Promise.all([
     fetchUsMarketSummary().catch(() => null),
     fetchTodayHighImpactEvents().catch(() => null),
     fetchTxfSummary().catch(() => null),
+  ]);
+  return { usMarket, economicEvents, txf };
+}
+
+async function buildTodayPlanMessage(today, shared) {
+  const [levels, market] = await Promise.all([
+    buildLevelsForWatchlist(today.watchlist, today.stopLossPct),
+    shared || fetchSharedMarketData(),
   ]);
 
   let commentary = null;
@@ -212,23 +319,33 @@ async function buildTodayPlanMessage() {
     commentary = await generateCommentary(today);
   }
 
-  return buildPlanMessage(today, levels, new Date(), commentary, usMarket, economicEvents, txf);
+  return buildPlanMessage(today, levels, new Date(), commentary, market.usMarket, market.economicEvents, market.txf);
 }
 
 async function pushDailyPlan() {
-  const userId = store.getSubscriberId();
-  if (!userId) {
-    console.warn('[pushDailyPlan] 尚無訂閱者 userId，略過推播（請先傳訊息給 Bot 一次）。');
+  const subscribers = await store.listSubscribers().catch((err) => {
+    console.error('[pushDailyPlan] 讀取訂閱者失敗:', err.message);
+    return [];
+  });
+  if (!subscribers.length) {
+    console.warn('[pushDailyPlan] 尚無訂閱者，略過推播。');
     return;
   }
 
-  const message = await buildTodayPlanMessage();
-  try {
-    await client.pushMessage(userId, { type: 'text', text: message });
-    console.log('[pushDailyPlan] 已推播', new Date().toISOString());
-  } catch (err) {
-    console.error('[pushDailyPlan] 推播失敗:', err.message);
+  const shared = await fetchSharedMarketData();
+  let sent = 0;
+  for (const userId of subscribers) {
+    try {
+      const user = await store.getUser(userId);
+      if (!user.dailyPush) continue;
+      const message = await buildTodayPlanMessage(user, shared);
+      await client.pushMessage(userId, { type: 'text', text: message });
+      sent++;
+    } catch (err) {
+      console.error(`[pushDailyPlan] 推播給 ${userId} 失敗:`, err.message);
+    }
   }
+  console.log(`[pushDailyPlan] 已推播 ${sent}/${subscribers.length} 人`, new Date().toISOString());
 }
 
 function isWithinIntradayWindow(now) {
@@ -241,19 +358,20 @@ async function pushIntradayCheck() {
   const now = new Date();
   if (!isWithinIntradayWindow(now)) return; // 排程每半小時觸發一次，只有落在 09:30~13:00 才真的推播
 
-  const userId = store.getSubscriberId();
-  if (!userId) return;
-
-  const today = store.getToday();
-  if (!today.watchlist.length) return;
-
-  try {
-    const { text } = await buildIntradayMessage(today);
-    await client.pushMessage(userId, { type: 'text', text });
-    console.log('[pushIntradayCheck] 已推播', now.toISOString());
-  } catch (err) {
-    console.error('[pushIntradayCheck] 推播失敗:', err.message);
+  const subscribers = await store.listSubscribers().catch(() => []);
+  let sent = 0;
+  for (const userId of subscribers) {
+    try {
+      const user = await store.getUser(userId);
+      if (!user.intradayPush || !user.watchlist.length) continue;
+      const { text } = await buildIntradayMessage(user);
+      await client.pushMessage(userId, { type: 'text', text });
+      sent++;
+    } catch (err) {
+      console.error(`[pushIntradayCheck] 推播給 ${userId} 失敗:`, err.message);
+    }
   }
+  if (sent) console.log(`[pushIntradayCheck] 已推播 ${sent} 人`, now.toISOString());
 }
 
 cron.schedule(PUSH_CRON, pushDailyPlan, { timezone: CRON_TIMEZONE });
@@ -287,6 +405,6 @@ app.get('/diag/quotes', async (_req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
-  console.log(`內容模式: ${CONTENT_MODE}｜排程: ${PUSH_CRON} (${CRON_TIMEZONE})`);
+  console.log(`內容模式: ${CONTENT_MODE}｜排程: ${PUSH_CRON} (${CRON_TIMEZONE})｜資料儲存: ${store.backendName}`);
   warmupCache();
 });

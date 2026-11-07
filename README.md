@@ -10,6 +10,10 @@
 - 支撐／壓力／停損價**不用手動輸入**：Bot 會即時向證交所公開資料（免費、不需金鑰）
   抓前一交易日 OHLC，用標準樞紐點公式（Pivot Point）自動計算；停損＝支撐下方 X%（可設定比例）
 - 傳「今日」可隨時查看目前完整計畫
+- 傳「K線 2330」會回傳 K 線卡片；按「互動圖表」開啟網頁版圖表（TradingView Lightweight Charts），
+  支撐／壓力／停損線已經畫好，可拖曳、縮放
+- **多人使用**：每個加好友的人都有自己的觀察名單與停損設定，排程推播會分別送給每個人；
+  「每日推播 開／關」「盤中推播 開／關」可自行開關（盤中推播預設關閉，避免用光 LINE 免費推播額度）
 - 內容生成預設為固定範本（零成本）；`CONTENT_MODE=claude` 可選用本機已登入的
   Claude Code CLI（`claude -p`）生成一小段提醒語句，失敗時自動 fallback 回純範本
 
@@ -60,10 +64,21 @@ LINE Developers Console 的 Webhook URL，並開啟「Use webhook」。
    `https://<你的服務>.onrender.com/healthz`，避免免費方案閒置 15 分鐘後休眠
    （休眠期間 cron 推播不會觸發）
 
+### 使用者資料庫（多人使用必設）
+
+Render 免費方案的硬碟是暫時性的，重啟／重新部署後檔案會消失，所以使用者設定要存在外部資料庫：
+
+1. 到 [Upstash](https://console.upstash.com) 建立免費的 Redis 資料庫（Region 選 Singapore 等離 Render 近的）
+2. 在資料庫頁面的 **REST API** 區塊複製 `UPSTASH_REDIS_REST_URL` 與 `UPSTASH_REDIS_REST_TOKEN`
+3. 填到 Render 的 Environment
+
+沒設定時會改存本機 `data/users.json`（本機開發用），在 Render 上每次重啟都會清空。
+`LINE_USER_ID` 指定的擁有者即使資料庫被清空也會繼續收到推播，並套用 `DEFAULT_WATCHLIST`。
+
 ### 免費方案的限制
 
-- **硬碟是暫時性的**：重啟／重新部署後，用 LINE「設定」指令改的內容會消失，
-  回到 `DEFAULT_WATCHLIST` 等環境變數的值。想長期改觀察名單，請改 Render 上的環境變數。
+- **LINE 推播額度**：免費方案每月推播則數有限（以官方帳號後台顯示為準），
+  每則推播 × 每個收到的人都會計算；使用者主動傳訊息後的回覆不計入。
 - **行情快取**：映像檔不含 `backtest/cache`，啟動後會在背景回補最近約 200 天的
   證交所資料（約 1～2 分鐘），期間「選股」「類股」可能回覆失敗，稍等即可。
   `/healthz` 的 `cacheReady` 會顯示是否完成。
