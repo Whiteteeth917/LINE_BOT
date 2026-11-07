@@ -17,8 +17,9 @@ const { buildIntradayMessage } = require('./intradayCheck');
 const { screenBySector } = require('../backtest/sectorScreen');
 const { formatSectorResult } = require('../backtest/formatSectorResult');
 const { listCategories } = require('../backtest/sectorLookup');
-const { buildCandlestickUrl } = require('./candlestickChart');
+const { buildCandlestickUrls } = require('./candlestickChart');
 const { loadNameMap, stockLabel } = require('./stockNames');
+const { backfillRecentDays } = require('../backtest/backfillHistory');
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -132,7 +133,7 @@ async function handleEvent(event) {
     codes = codes.slice(0, 5);
 
     try {
-      const urls = await Promise.all(codes.map((code) => buildCandlestickUrl(code).catch(() => null)));
+      const urls = await buildCandlestickUrls(codes);
       const messages = [];
       codes.forEach((code, i) => {
         if (urls[i]) {
@@ -258,8 +259,24 @@ async function pushIntradayCheck() {
 cron.schedule(PUSH_CRON, pushDailyPlan, { timezone: CRON_TIMEZONE });
 cron.schedule(INTRADAY_CRON, pushIntradayCheck, { timezone: CRON_TIMEZONE });
 
+// 啟動時在背景補齊最近的歷史行情快取。雲端部署（Render 等）的映像檔不含 backtest/cache，
+// 選股／類股需要至少 80 個交易日（含 60 日均線），預設回補 200 個日曆天（約 135 個交易日）。
+// 已存在的日期會被略過，所以本機有快取時幾乎不花時間。
+const WARMUP_DAYS = Number(process.env.WARMUP_DAYS) || 200;
+let warmupDone = false;
+function warmupCache() {
+  console.log(`[warmup] 開始回補最近 ${WARMUP_DAYS} 天行情快取`);
+  return backfillRecentDays(WARMUP_DAYS)
+    .then(() => console.log('[warmup] 行情快取回補完成'))
+    .catch((err) => console.error('[warmup] 行情快取回補失敗:', err.message))
+    .finally(() => { warmupDone = true; });
+}
+
+app.get('/healthz', (_req, res) => res.json({ ok: true, cacheReady: warmupDone }));
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
   console.log(`內容模式: ${CONTENT_MODE}｜排程: ${PUSH_CRON} (${CRON_TIMEZONE})`);
+  warmupCache();
 });

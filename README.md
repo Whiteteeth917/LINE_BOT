@@ -46,15 +46,28 @@ LINE Developers Console 的 Webhook URL，並開啟「Use webhook」。
 
 ## 部署（免費方案，以 Render 為例）
 
-1. 把這個資料夾推上 GitHub（`.env` 不會被推上去，`.gitignore` 已排除）
-2. Render → New → Web Service → 選這個 repo
-   - Build command: `npm install`
-   - Start command: `npm start`
-3. 在 Render 的 Environment 頁填入 `.env.example` 裡的變數
-4. 部署完成後，把 Render 給的網址 `https://your-app.onrender.com/webhook`
-   填回 LINE Developers Console 的 Webhook URL
-5. 免費方案閒置會休眠，可搭配 [cron-job.org](https://cron-job.org) 等免費服務
-   每隔幾分鐘打一次首頁 `/` 保持喚醒（可選）
+專案已附 `render.yaml`（Blueprint），會用現有的 `Dockerfile` 部署（內建台北時區）。
+
+1. 把這個 repo 推上 GitHub（`.env` 不會被推上去）
+2. Render → **New → Blueprint** → 選這個 repo，Render 會讀 `render.yaml` 建立服務
+3. 依提示填入環境變數：
+   - `LINE_CHANNEL_ACCESS_TOKEN`、`LINE_CHANNEL_SECRET`
+   - `LINE_USER_ID`：你的 userId（LINE Developers Console → Basic settings → Your user ID）
+   - `DEFAULT_WATCHLIST`：預設觀察名單，例如 `2330,2454`
+4. 部署完成後，把 `https://<你的服務>.onrender.com/webhook` 填回
+   LINE Developers Console 的 Webhook URL，開啟「Use webhook」並按 Verify
+5. 到 [cron-job.org](https://cron-job.org) 建一個排程，**每 10 分鐘**打一次
+   `https://<你的服務>.onrender.com/healthz`，避免免費方案閒置 15 分鐘後休眠
+   （休眠期間 cron 推播不會觸發）
+
+### 免費方案的限制
+
+- **硬碟是暫時性的**：重啟／重新部署後，用 LINE「設定」指令改的內容會消失，
+  回到 `DEFAULT_WATCHLIST` 等環境變數的值。想長期改觀察名單，請改 Render 上的環境變數。
+- **行情快取**：映像檔不含 `backtest/cache`，啟動後會在背景回補最近約 200 天的
+  證交所資料（約 1～2 分鐘），期間「選股」「類股」可能回覆失敗，稍等即可。
+  `/healthz` 的 `cacheReady` 會顯示是否完成。
+- `CONTENT_MODE=claude` 需要本機 claude CLI，雲端上請維持 `template`。
 
 ## 今日重點設定範例
 

@@ -1,0 +1,26 @@
+# Render Blueprint：Render → New → Blueprint → 選這個 repo 即可一鍵建立
+services:
+  - type: web
+    name: line-trading-plan-bot
+    runtime: docker          # 使用現有 Dockerfile（已內建 TZ=Asia/Taipei，盤中時段判斷才會正確）
+    plan: free
+    region: singapore        # 離台灣最近的區域
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false          # 建立時會要求你手動填入，不會寫進 repo
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_USER_ID
+        sync: false          # 你的 LINE userId（Developers Console → Basic settings → Your user ID）
+      - key: DEFAULT_WATCHLIST
+        sync: false          # 例：2330,2454
+      - key: CONTENT_MODE
+        value: template
+      - key: CRON_TIMEZONE
+        value: Asia/Taipei
+      - key: PUSH_CRON
+        value: "30 7 * * 1-5"
+      - key: INTRADAY_CRON
+        value: "*/30 9-13 * * 1-5"

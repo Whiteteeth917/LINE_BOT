@@ -1,4 +1,4 @@
-const { loadAllDays } = require('../backtest/loadCache');
+const { loadRecentDays } = require('../backtest/loadCache');
 const { buildSeriesByCode } = require('../backtest/buildSeries');
 const { annotateSeries } = require('../backtest/indicators');
 
@@ -9,9 +9,19 @@ function parseDateToMs(yyyymmdd) {
   return Date.UTC(y, m, d);
 }
 
+// 畫圖需要的交易日數：顯示 60 天 + 20 日均線往前需要的 19 天，多抓一點緩衝
+const CHART_LOOKBACK_DAYS = 85;
+
+// 一次產生多檔 K 線圖，共用同一份「最近 N 日」快取（雲端免費方案記憶體只有 512MB，
+// 不能每檔都把整份歷史快取重新載入一次）。回傳與 codes 對應的網址陣列，失敗的位置為 null。
+async function buildCandlestickUrls(codes, windowDays = 60) {
+  const days = loadRecentDays(Math.max(CHART_LOOKBACK_DAYS, windowDays + 25));
+  return Promise.all(codes.map((code) => buildCandlestickUrl(code, windowDays, days).catch(() => null)));
+}
+
 // 回傳 QuickChart 短網址（免費第三方圖表服務，不需金鑰），抓不到資料回傳 null
-async function buildCandlestickUrl(code, windowDays = 60) {
-  const days = loadAllDays();
+async function buildCandlestickUrl(code, windowDays = 60, days = loadRecentDays(Math.max(CHART_LOOKBACK_DAYS, windowDays + 25))) {
+  if (!days.length) return null;
   const seriesMap = buildSeriesByCode(days, [code]);
   const series = seriesMap.get(code);
   if (!series || series.length === 0) return null;
@@ -68,4 +78,4 @@ async function buildCandlestickUrl(code, windowDays = 60) {
   return json.url;
 }
 
-module.exports = { buildCandlestickUrl };
+module.exports = { buildCandlestickUrl, buildCandlestickUrls };
