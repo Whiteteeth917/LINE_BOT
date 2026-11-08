@@ -33,15 +33,37 @@ function percentileRank(sortedArr, val) {
 // 且同時滿足「創20日新高」與「量能爆量」（比只滿足其一嚴格，訊號品質較高）。
 const DEFAULT_RS_PERCENTILE = 0.9;
 
-// 進場條件：站上季線且季線走揚、站上月線、相對強度夠強、且創20日新高與爆量同時成立
-function isEntrySignal(row, sortedRet20, rsPercentile = DEFAULT_RS_PERCENTILE) {
-  if (row.ma20 == null || row.ma60 == null || row.ma60Rising == null || row.ret20 == null || !sortedRet20) {
-    return false;
+const VOLUME_SURGE_MULTIPLE = 1.5;
+
+// 把進場條件拆成逐項結果（給「進場條件」指令逐條顯示用），isEntrySignal 也共用這份判斷，確保兩邊邏輯一致。
+// 資料不足時回傳 null。
+function evaluateEntryConditions(row, sortedRet20, rsPercentile = DEFAULT_RS_PERCENTILE) {
+  if (row.ma20 == null || row.ma60 == null || row.ma60Rising == null || row.ret20 == null || !sortedRet20 || !sortedRet20.length) {
+    return null;
   }
-  const trendUp = row.close > row.ma20 && row.ma20 > row.ma60 && row.ma60Rising;
-  const relativeStrength = percentileRank(sortedRet20, row.ret20) >= rsPercentile;
-  const breakout = row.isHigh20 && row.volAvg20 != null && row.volume > 1.5 * row.volAvg20;
-  return trendUp && relativeStrength && breakout;
+  const rsRank = percentileRank(sortedRet20, row.ret20);
+  const conditions = {
+    aboveMa20: row.close > row.ma20,
+    ma20AboveMa60: row.ma20 > row.ma60,
+    ma60Rising: row.ma60Rising,
+    relativeStrength: rsRank >= rsPercentile,
+    high20: row.isHigh20,
+    volumeSurge: row.volAvg20 != null && row.volume > VOLUME_SURGE_MULTIPLE * row.volAvg20,
+  };
+  return { conditions, rsRank, all: Object.values(conditions).every(Boolean) };
 }
 
-module.exports = { buildSortedRet20ByDate, isEntrySignal, percentileRank, DEFAULT_RS_PERCENTILE };
+// 進場條件：站上季線且季線走揚、站上月線、相對強度夠強、且創20日新高與爆量同時成立
+function isEntrySignal(row, sortedRet20, rsPercentile = DEFAULT_RS_PERCENTILE) {
+  const result = evaluateEntryConditions(row, sortedRet20, rsPercentile);
+  return Boolean(result && result.all);
+}
+
+module.exports = {
+  buildSortedRet20ByDate,
+  evaluateEntryConditions,
+  isEntrySignal,
+  percentileRank,
+  DEFAULT_RS_PERCENTILE,
+  VOLUME_SURGE_MULTIPLE,
+};

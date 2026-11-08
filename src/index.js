@@ -21,6 +21,8 @@ const { buildCandlestickUrls } = require('./candlestickChart');
 const { buildChartData, renderChartPage, renderNotFound, isValidCode } = require('./chartPage');
 const { loadNameMap, stockLabel } = require('./stockNames');
 const { backfillRecentDays } = require('../backtest/backfillHistory');
+const { checkWatchlistEntry } = require('../backtest/watchlistEntry');
+const { formatEntryConditions } = require('../backtest/formatEntryConditions');
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -142,6 +144,34 @@ async function handleEvent(event) {
     } catch (err) {
       console.error('[intradayCheck] 失敗:', err);
       return client.replyMessage(event.replyToken, { type: 'text', text: '盤中資料抓取失敗，請稍後再試一次。' });
+    }
+  }
+
+  if (/^進場(條件)?(?=\s|$|\d)/.test(text)) {
+    const user = await store.getUser(userId);
+    const rest = text.replace(/^進場(條件)?/, '').trim();
+    const codes = rest ? rest.split(/[,、\s]+/).filter(Boolean).map((c) => c.toUpperCase()) : user.watchlist;
+    if (!codes.length) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '請先用「設定」設定觀察名單，或直接指定代號，例如「進場條件 2330 2454」。',
+      });
+    }
+    const MAX_CODES = 10;
+    const validCodes = codes.filter(isValidCode).slice(0, MAX_CODES);
+    if (!validCodes.length) {
+      return client.replyMessage(event.replyToken, { type: 'text', text: '股票代號格式不正確，例如「進場條件 2330」。' });
+    }
+    try {
+      const result = await checkWatchlistEntry(validCodes, { stopLossPct: user.stopLossPct });
+      let message = formatEntryConditions(result);
+      if (codes.length > MAX_CODES) message += `
+
+（一次最多檢查 ${MAX_CODES} 檔，僅顯示前 ${MAX_CODES} 檔）`;
+      return client.replyMessage(event.replyToken, { type: 'text', text: message });
+    } catch (err) {
+      console.error('[watchlistEntry] 失敗:', err);
+      return client.replyMessage(event.replyToken, { type: 'text', text: '進場條件資料抓取失敗，請稍後再試一次。' });
     }
   }
 
@@ -283,6 +313,8 @@ function helpText() {
     '選股 → 不知道要看哪些股票時用。從全市場流動性前150大股票裡，篩出今天符合技術面進場條件的候選股，附即時基本面與異常標記（2年回測驗證過）',
     '',
     '類股 關鍵字 → 對特定產業有興趣、但不知道買哪一檔時用。例如「類股 半導體」「類股 重電」「類股 航運」，會列出該產業符合技術訊號的股票，附進場／目標／停損參考價與法人籌碼（不加關鍵字會列出所有產業分類）',
+    '',
+    '進場條件 [代號] → 逐項檢查觀察名單每一檔的進場條件（趨勢／相對強度／突破爆量）哪些成立、哪些還沒到，並列出下一交易日要突破的價位與量；也可指定代號，例如「進場條件 2330」',
     '',
     '盤中 → 隨時查看台指期與觀察標的的即時報價（約15分鐘延遲），並標示是否跌破停損或20日均線',
     '',
