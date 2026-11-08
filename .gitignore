@@ -4,3 +4,4 @@ data/subscriber.json
 data/today.json
 backtest/cache/
 data/users.json
+data/simulator-users.json

@@ -25,6 +25,16 @@ const { checkWatchlistEntry } = require('../backtest/watchlistEntry');
 const { formatEntryConditions } = require('../backtest/formatEntryConditions');
 const { addPosition, removePosition, buildPositionsReport, fmt, fmtLots, fmtMoney, fmtSignedPct, SHARES_PER_LOT } = require('./positions');
 const { fetchQuotes } = require('./intradayQuotes');
+const { buildStockCheck } = require('./stockCheck');
+const {
+  MAX_ALERTS_PER_USER,
+  describe: describeAlert,
+  resolveDirection,
+  addAlert,
+  removeAlerts,
+  checkAlerts,
+  fmt: fmtAlert,
+} = require('./priceAlerts');
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -37,6 +47,9 @@ const CRON_TIMEZONE = process.env.CRON_TIMEZONE || 'Asia/Taipei';
 const INTRADAY_CRON = process.env.INTRADAY_CRON || '*/30 9-13 * * 1-5';
 // 盤中檢查只在 09:30~13:00 這個區間內實際推播（cron 本身每半小時觸發，開盤09:00與收盤13:30兩個時間點跳過）
 const INTRADAY_WINDOW = [{ h: 9, m: 30 }, { h: 13, m: 0 }];
+// 到價提醒：交易時段內每 5 分鐘檢查一次（09:00~13:30）
+const ALERT_CRON = process.env.ALERT_CRON || '*/5 9-13 * * 1-5';
+const ALERT_WINDOW = [{ h: 9, m: 0 }, { h: 13, m: 30 }];
 
 const client = new Client(lineConfig);
 const app = express();
@@ -222,6 +235,91 @@ async function handleEvent(event) {
       console.error('[positions] 失敗:', err);
       return client.replyMessage(event.replyToken, { type: 'text', text: '持股資料抓取失敗，請稍後再試一次。' });
     }
+  }
+
+  // ---- 個股健檢 ----
+  const stockQuery = text.match(/^(?:查|健檢)\s*([0-9A-Za-z]+)$/);
+  if (stockQuery) {
+    const code = stockQuery[1].toUpperCase();
+    if (!isValidCode(code)) {
+      return client.replyMessage(event.replyToken, { type: 'text', text: '代號格式不正確，例如「查 2330」。' });
+    }
+    try {
+      const message = await buildStockCheck(code, await store.getUser(userId));
+      return client.replyMessage(event.replyToken, { type: 'text', text: message });
+    } catch (err) {
+      console.error('[stockCheck] 失敗:', err);
+      return client.replyMessage(event.replyToken, { type: 'text', text: '個股資料抓取失敗，請稍後再試一次。' });
+    }
+  }
+
+  // ---- 到價提醒 ----
+  if (/^取消提醒/.test(text)) {
+    const m = text.match(/^取消提醒\s*([0-9A-Za-z]+)(?:\s+(\d+(?:\.\d+)?))?$/);
+    if (!m) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '格式：取消提醒 代號 [價格]（不填價格＝取消這檔全部提醒），例如「取消提醒 2330」',
+      });
+    }
+    const user = await store.getUser(userId);
+    const { alerts, removed } = removeAlerts(user.alerts, m[1].toUpperCase(), m[2] != null ? Number(m[2]) : undefined);
+    if (!removed) {
+      return client.replyMessage(event.replyToken, { type: 'text', text: '找不到符合的提醒，傳「提醒」查看目前設定。' });
+    }
+    await store.saveUser(userId, { alerts });
+    return client.replyMessage(event.replyToken, { type: 'text', text: `已取消 ${removed} 則提醒，剩 ${alerts.length} 則。` });
+  }
+
+  if (/^提醒/.test(text)) {
+    const user = await store.getUser(userId);
+    const nameMap = loadNameMap();
+    const rest = text.replace(/^提醒/, '').trim();
+
+    if (!rest) {
+      const list = user.alerts.map((a) => `・${stockLabel(a.code, nameMap)} ${describeAlert(a)}`);
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: list.length
+          ? `目前的到價提醒（${list.length}/${MAX_ALERTS_PER_USER}）：\n${list.join('\n')}\n\n取消：傳「取消提醒 代號」`
+          : '目前沒有到價提醒。\n設定方式：「提醒 2330 2500」（目標價高於現價＝漲到時通知，低於現價＝跌到時通知）\n也可指定方向：「提醒 2330 >2500」「提醒 2330 <2000」',
+      });
+    }
+
+    const m = rest.match(/^([0-9A-Za-z]+)\s+([<>])?\s*(\d+(?:\.\d+)?)$/);
+    const code = m && m[1].toUpperCase();
+    const price = m && Number(m[3]);
+    if (!m || !isValidCode(code) || !(price > 0)) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '格式：提醒 代號 價格，例如「提醒 2330 2500」；也可指定方向「提醒 2330 >2500」「提醒 2330 <2000」',
+      });
+    }
+
+    const quote = (await fetchQuotes([code]).catch(() => new Map())).get(code);
+    const direction = resolveDirection(m[2], price, quote && quote.close);
+    if (!direction) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: `目前抓不到 ${code} 的報價，無法判斷方向。請用「提醒 ${code} >${m[3]}」或「提醒 ${code} <${m[3]}」指定。`,
+      });
+    }
+    if (quote && (direction === 'above' ? quote.close >= price : quote.close <= price)) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: `${stockLabel(code, nameMap)} 現價 ${fmtAlert(quote.close)} 已經${direction === 'above' ? '高於' : '低於'} ${fmtAlert(price)}，不需要設提醒。`,
+      });
+    }
+
+    const alert = { code, price, direction, createdAt: new Date().toISOString() };
+    const { alerts, error } = addAlert(user.alerts, alert);
+    if (error) return client.replyMessage(event.replyToken, { type: 'text', text: error });
+    await store.saveUser(userId, { alerts });
+    const now = quote ? `（現價 ${fmtAlert(quote.close)}）` : '';
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `已設定：${stockLabel(code, nameMap)} ${describeAlert(alert)} 時通知你${now}\n交易日 09:00~13:30 每 5 分鐘檢查一次，觸發後自動刪除。`,
+    });
   }
 
   if (['今日', '查看', '查詢', '計畫'].includes(text)) {
@@ -434,6 +532,10 @@ function helpText() {
     '',
     '進場條件 [代號] → 逐項檢查觀察名單每一檔的進場條件（趨勢／相對強度／突破爆量）哪些成立、哪些還沒到，並列出下一交易日要突破的價位與量；也可指定代號，例如「進場條件 2330」',
     '',
+    '查 代號 → 個股健檢，一次看現價、進場條件達成幾項、支撐壓力、月營收／EPS、近5日法人買賣超、異常標記，例如「查 2330」',
+    '',
+    '提醒 代號 價格 → 到價提醒，例如「提醒 2330 2500」（目標高於現價＝漲到通知，低於＝跌到通知；也可寫「>2500」「<2000」指定方向）。傳「提醒」看清單，「取消提醒 代號」取消。交易時段每5分鐘檢查，觸發一次後自動刪除',
+    '',
     '盤中 → 隨時查看台指期、持股與觀察標的的即時報價（約15分鐘延遲），並標示是否跌破停損或20日均線、持股是否觸發出場',
     '',
     'K線 [代號] → 查看K線圖（含20日均線），例如「K線 2330」；不加代號則顯示你觀察名單裡所有股票（最多10檔）。按「互動圖表」可開啟已畫好支撐／壓力／停損線、可拖曳縮放的圖表',
@@ -444,6 +546,7 @@ function helpText() {
     '',
     `【自動推播】每個交易日 ${PUSH_CRON}（${CRON_TIMEZONE}）推播一次每日計畫；`,
     `盤中推播開啟時，09:30~13:00 每 30 分鐘（cron: ${INTRADAY_CRON}）推播一次部位檢查。`,
+    '到價提醒觸發時會另外推播（每則提醒只推一次）。',
   ].join('\n');
 }
 
@@ -498,15 +601,14 @@ async function pushDailyPlan() {
   console.log(`[pushDailyPlan] 已推播 ${sent}/${subscribers.length} 人`, new Date().toISOString());
 }
 
-function isWithinIntradayWindow(now) {
-  const [start, end] = INTRADAY_WINDOW;
+function isWithinWindow(now, [start, end]) {
   const minutes = now.getHours() * 60 + now.getMinutes();
   return minutes >= start.h * 60 + start.m && minutes <= end.h * 60 + end.m;
 }
 
 async function pushIntradayCheck() {
   const now = new Date();
-  if (!isWithinIntradayWindow(now)) return; // 排程每半小時觸發一次，只有落在 09:30~13:00 才真的推播
+  if (!isWithinWindow(now, INTRADAY_WINDOW)) return; // 排程每半小時觸發一次，只有落在 09:30~13:00 才真的推播
 
   const subscribers = await store.listSubscribers().catch(() => []);
   let sent = 0;
@@ -524,8 +626,52 @@ async function pushIntradayCheck() {
   if (sent) console.log(`[pushIntradayCheck] 已推播 ${sent} 人`, now.toISOString());
 }
 
+async function pushPriceAlerts() {
+  const now = new Date();
+  if (!isWithinWindow(now, ALERT_WINDOW)) return;
+
+  const subscribers = await store.listSubscribers().catch(() => []);
+  const usersWithAlerts = [];
+  for (const userId of subscribers) {
+    try {
+      const user = await store.getUser(userId);
+      if (user.alerts.length) usersWithAlerts.push({ userId, alerts: user.alerts });
+    } catch (err) {
+      console.error(`[pushPriceAlerts] 讀取 ${userId} 失敗:`, err.message);
+    }
+  }
+  if (!usersWithAlerts.length) return;
+
+  let results;
+  try {
+    results = await checkAlerts(usersWithAlerts);
+  } catch (err) {
+    console.error('[pushPriceAlerts] 報價取得失敗:', err.message);
+    return;
+  }
+
+  const nameMap = loadNameMap();
+  for (const { userId, triggered, remaining } of results) {
+    try {
+      // 先刪除再推播：就算推播失敗也不會每 5 分鐘重複觸發、浪費推播額度
+      await store.saveUser(userId, { alerts: remaining });
+      const lines = triggered.map(({ alert, price }) =>
+        `・${stockLabel(alert.code, nameMap)} 已${describeAlert(alert)}，現價 ${fmtAlert(price)}`
+      );
+      await client.pushMessage(userId, {
+        type: 'text',
+        text: `🔔 到價提醒\n${lines.join('\n')}\n\n（報價約15分鐘延遲；這${triggered.length > 1 ? '些' : '則'}提醒已自動刪除）`,
+      });
+    } catch (err) {
+      console.error(`[pushPriceAlerts] 推播給 ${userId} 失敗:`, err.message);
+    }
+  }
+  console.log(`[pushPriceAlerts] 觸發 ${results.reduce((n, r) => n + r.triggered.length, 0)} 則`, now.toISOString());
+}
+
 cron.schedule(PUSH_CRON, pushDailyPlan, { timezone: CRON_TIMEZONE });
 cron.schedule(INTRADAY_CRON, pushIntradayCheck, { timezone: CRON_TIMEZONE });
+cron.schedule(ALERT_CRON, pushPriceAlerts, { timezone: CRON_TIMEZONE });
 
 // 啟動時在背景補齊最近的歷史行情快取。雲端部署（Render 等）的映像檔不含 backtest/cache，
 // 選股／類股需要至少 80 個交易日（含 60 日均線），預設回補 200 個日曆天（約 135 個交易日）。

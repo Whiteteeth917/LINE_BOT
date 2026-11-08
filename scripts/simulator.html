@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LINE Bot 模擬器</title>
+<style>
+  :root {
+    --bg: #8ca8c9;
+    --header: #2b3a4f;
+    --me: #85e249;
+    --bot: #ffffff;
+    --text: #111;
+    --muted: #5b6b80;
+    --chip: #ffffffcc;
+    --accent: #06c755;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: #dfe5ec;
+    display: flex; justify-content: center;
+  }
+  .phone {
+    width: 100%; max-width: 480px; height: 100%;
+    display: flex; flex-direction: column;
+    background: var(--bg);
+    box-shadow: 0 0 24px #0002;
+  }
+  header {
+    background: var(--header); color: #fff;
+    padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+  }
+  header .avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent); display: grid; place-items: center; font-weight: 700;
+  }
+  header .title { font-weight: 600; }
+  header .sub { font-size: 12px; opacity: .7; }
+  header button {
+    margin-left: auto; background: transparent; color: #fff; border: 1px solid #fff6;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+  }
+  #log { flex: 1; overflow-y: auto; padding: 16px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; gap: 8px; align-items: flex-end; }
+  .row.me { justify-content: flex-end; }
+  .bubble {
+    max-width: 82%; padding: 9px 12px; border-radius: 16px;
+    white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-size: 14px; color: var(--text);
+  }
+  .me .bubble { background: var(--me); border-bottom-right-radius: 4px; }
+  .bot .bubble { background: var(--bot); border-bottom-left-radius: 4px; }
+  .bubble.push { border: 2px solid #f5a623; }
+  .time { font-size: 10px; color: #fffc; }
+  .typing { color: #fff; font-size: 13px; padding-left: 4px; }
+  .carousel { display: flex; gap: 8px; overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
+  .card { flex: 0 0 240px; background: #fff; border-radius: 14px; overflow: hidden; font-size: 13px; }
+  .card img { width: 100%; display: block; background: #eee; }
+  .card .body { padding: 10px 12px; }
+  .card .label { font-weight: 700; font-size: 15px; }
+  .card .muted { color: #888; font-size: 11px; margin-top: 2px; }
+  .card a.btn {
+    display: block; margin: 0 12px 12px; text-align: center; background: #b8322a; color: #fff;
+    border-radius: 8px; padding: 8px; text-decoration: none; font-size: 13px;
+  }
+  .chips { display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px; background: #0001; }
+  .chips button {
+    flex: 0 0 auto; border: 1px solid #fff; background: var(--chip); border-radius: 16px;
+    padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  form { display: flex; gap: 8px; padding: 10px 12px; background: #fff; align-items: flex-end; }
+  textarea {
+    flex: 1; resize: none; border: 1px solid #ccd; border-radius: 18px; padding: 9px 14px;
+    font: inherit; font-size: 15px; max-height: 120px; color: var(--text); background: #fff;
+  }
+  form button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 18px;
+    padding: 9px 16px; font-size: 15px; cursor: pointer;
+  }
+  form button:disabled { opacity: .5; }
+  .hint { font-size: 11px; color: var(--muted); text-align: center; padding: 0 0 6px; background: #fff; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <header>
+    <div class="avatar">台</div>
+    <div>
+      <div class="title">台股交易計畫 Bot</div>
+      <div class="sub">本機模擬器・回覆不會送到 LINE</div>
+    </div>
+    <button id="followBtn" title="模擬「加好友」事件">加好友</button>
+  </header>
+  <div id="log"></div>
+  <div class="chips" id="chips"></div>
+  <form id="form">
+    <textarea id="input" rows="1" placeholder="輸入訊息（Enter 送出，Shift+Enter 換行）"></textarea>
+    <button id="sendBtn" type="submit">送出</button>
+  </form>
+  <div class="hint">「設定」指令需要多行：用 Shift+Enter 換行</div>
+</div>
+
+<script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+
+const QUICK = [
+  '說明', '今日', '選股', '類股 半導體', '進場條件', '查 2330', '加 2330 2454', '觀察名單',
+  '買進 2412 160 2', '持股', '盤中', 'K線 2330', '提醒 2330 2500', '提醒',
+];
+const chips = document.getElementById('chips');
+for (const q of QUICK) {
+  const b = document.createElement('button');
+  b.textContent = q;
+  b.onclick = () => send(q);
+  chips.appendChild(b);
+}
+
+function now() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function addRow(cls, node) {
+  const row = document.createElement('div');
+  row.className = `row ${cls}`;
+  const t = document.createElement('span');
+  t.className = 'time';
+  t.textContent = now();
+  if (cls === 'me') row.append(t, node); else row.append(node, t);
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return row;
+}
+
+function textBubble(text, extra = '') {
+  const b = document.createElement('div');
+  b.className = `bubble ${extra}`;
+  b.textContent = text;
+  return b;
+}
+
+// 只實作這個 Bot 用到的 Flex 結構（K線卡片的 carousel）
+function flexNode(msg) {
+  const bubbles = msg.contents.type === 'carousel' ? msg.contents.contents : [msg.contents];
+  const wrap = document.createElement('div');
+  wrap.className = 'carousel';
+  for (const bubble of bubbles) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    if (bubble.hero && bubble.hero.url) {
+      const img = document.createElement('img');
+      img.src = bubble.hero.url;
+      img.alt = 'K線圖';
+      card.appendChild(img);
+    }
+    const body = document.createElement('div');
+    body.className = 'body';
+    const texts = (bubble.body && bubble.body.contents) || [];
+    texts.forEach((t, i) => {
+      const d = document.createElement('div');
+      d.className = i === 0 ? 'label' : 'muted';
+      d.textContent = t.text || '';
+      body.appendChild(d);
+    });
+    card.appendChild(body);
+    const buttons = (bubble.footer && bubble.footer.contents) || [];
+    for (const btn of buttons) {
+      if (!btn.action || btn.action.type !== 'uri') continue;
+      const a = document.createElement('a');
+      a.className = 'btn';
+      a.href = btn.action.uri;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = btn.action.label || '開啟';
+      card.appendChild(a);
+    }
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
+function renderMessage(msg, extra) {
+  if (msg.type === 'text') return addRow('bot', textBubble(msg.text, extra));
+  if (msg.type === 'flex') return addRow('bot', flexNode(msg));
+  return addRow('bot', textBubble(`（${msg.type} 訊息，模擬器未支援顯示）`, extra));
+}
+
+async function send(text, opts = {}) {
+  if (!opts.follow) {
+    text = text.trim();
+    if (!text) return;
+    addRow('me', textBubble(text));
+  }
+  sendBtn.disabled = true;
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.textContent = 'Bot 處理中…（選股、類股、進場條件需要抓資料，可能要幾秒到一分鐘）';
+  log.appendChild(typing);
+  log.scrollTop = log.scrollHeight;
+  try {
+    const res = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts.follow ? { follow: true } : { text }),
+    });
+    const data = await res.json();
+    typing.remove();
+    if (data.error) addRow('bot', textBubble(`⚠️ 模擬器錯誤：${data.error}`));
+    else if (!data.messages.length) addRow('bot', textBubble(`（Bot 沒有回覆，HTTP ${data.status}）`));
+    else data.messages.forEach((m) => renderMessage(m));
+  } catch (err) {
+    typing.remove();
+    addRow('bot', textBubble(`⚠️ 連不上模擬器：${err.message}`));
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+document.getElementById('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const v = input.value;
+  input.value = '';
+  send(v);
+});
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    document.getElementById('form').requestSubmit();
+  }
+});
+document.getElementById('followBtn').onclick = () => send('', { follow: true });
+
+// 排程推播（到價提醒、盤中推播等）在交易時段才會觸發，這裡每 10 秒撿一次
+setInterval(async () => {
+  try {
+    const { messages } = await (await fetch('/api/pushes')).json();
+    messages.forEach((m) => renderMessage(m, 'push'));
+  } catch {}
+}, 10000);
+
+addRow('bot', textBubble('👋 這是本機模擬器，跟真的 Bot 用同一份程式碼。\n點下方按鈕或直接輸入指令試試看，先按「說明」看全部指令。\n橘框訊息＝排程推播。'));
+input.focus();
+</script>
+</body>
+</html>

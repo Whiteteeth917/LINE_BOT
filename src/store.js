@@ -9,7 +9,8 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const USERS_PATH = path.join(DATA_DIR, 'users.json');
+// USERS_FILE 可另外指定（模擬器用獨立檔案，不會動到真正的使用者資料）
+const USERS_PATH = process.env.USERS_FILE || path.join(DATA_DIR, 'users.json');
 // 舊版（單一使用者）的檔案，首次啟動時會搬到新格式
 const LEGACY_TODAY_PATH = path.join(DATA_DIR, 'today.json');
 const LEGACY_SUBSCRIBER_PATH = path.join(DATA_DIR, 'subscriber.json');
@@ -34,6 +35,8 @@ function defaultsFor(userId) {
     intradayPush: Boolean(isOwner),
     // 持股紀錄：[{ code, cost, lots, buyDate: 'YYYYMMDD' }]，用「買進／賣出」指令維護
     positions: [],
+    // 到價提醒：[{ code, price, direction: 'above' | 'below', createdAt }]，觸發一次後自動刪除
+    alerts: [],
   };
 }
 
