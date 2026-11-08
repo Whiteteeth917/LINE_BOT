@@ -23,6 +23,8 @@ const { loadNameMap, stockLabel } = require('./stockNames');
 const { backfillRecentDays } = require('../backtest/backfillHistory');
 const { checkWatchlistEntry } = require('../backtest/watchlistEntry');
 const { formatEntryConditions } = require('../backtest/formatEntryConditions');
+const { addPosition, removePosition, buildPositionsReport, fmt, fmtLots, fmtMoney, fmtSignedPct, SHARES_PER_LOT } = require('./positions');
+const { fetchQuotes } = require('./intradayQuotes');
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -112,6 +114,116 @@ async function handleEvent(event) {
     });
   }
 
+  // ---- 觀察名單快速增減 ----
+  const watchEdit = text.match(/^(加入|新增|加|刪除|移除|刪)\s*(?:觀察)?\s*(.*)$/);
+  if (watchEdit) {
+    const adding = ['加入', '新增', '加'].includes(watchEdit[1]);
+    const codes = watchEdit[2].split(/[,、\s]+/).filter(Boolean).map((c) => c.toUpperCase());
+    if (!codes.length) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: `請在後面加代號，例如「${adding ? '加' : '刪'} 2330 2454」。`,
+      });
+    }
+    const invalid = codes.filter((c) => !isValidCode(c));
+    if (invalid.length) {
+      return client.replyMessage(event.replyToken, { type: 'text', text: `代號格式不正確：${invalid.join('、')}` });
+    }
+    const user = await store.getUser(userId);
+    const nameMap = loadNameMap();
+    const notes = [];
+    let watchlist = user.watchlist;
+    if (adding) {
+      const already = codes.filter((c) => watchlist.includes(c));
+      const fresh = [...new Set(codes.filter((c) => !watchlist.includes(c)))];
+      watchlist = [...watchlist, ...fresh];
+      if (fresh.length) notes.push(`已加入：${fresh.map((c) => stockLabel(c, nameMap)).join('、')}`);
+      if (already.length) notes.push(`原本就在名單中：${already.join('、')}`);
+      const unknown = fresh.filter((c) => !nameMap.has(c));
+      if (unknown.length) notes.push(`⚠️ 查無上市資料（可能代號錯誤或為上櫃股票，部分功能查不到）：${unknown.join('、')}`);
+    } else {
+      const removed = codes.filter((c) => watchlist.includes(c));
+      const missing = codes.filter((c) => !watchlist.includes(c));
+      watchlist = watchlist.filter((c) => !codes.includes(c));
+      if (removed.length) notes.push(`已移除：${removed.map((c) => stockLabel(c, nameMap)).join('、')}`);
+      if (missing.length) notes.push(`不在名單中：${missing.join('、')}`);
+    }
+    await store.saveUser(userId, { watchlist });
+    notes.push(`目前觀察名單（${watchlist.length} 檔）：${watchlist.map((c) => stockLabel(c, nameMap)).join('、') || '（空）'}`);
+    return client.replyMessage(event.replyToken, { type: 'text', text: notes.join('\n') });
+  }
+
+  if (['觀察名單', '名單'].includes(text)) {
+    const user = await store.getUser(userId);
+    const nameMap = loadNameMap();
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: user.watchlist.length
+        ? `目前觀察名單（${user.watchlist.length} 檔）：\n${user.watchlist.map((c) => stockLabel(c, nameMap)).join('\n')}`
+        : '觀察名單是空的，傳「加 2330」加入。',
+    });
+  }
+
+  // ---- 持股紀錄 ----
+  if (/^(買進|買入)/.test(text)) {
+    const m = text.match(/^(?:買進|買入)\s*([0-9A-Za-z]+)\s+(\d+(?:\.\d+)?)(?:\s+(\d+(?:\.\d+)?))?\s*張?$/);
+    const code = m && m[1].toUpperCase();
+    const cost = m && Number(m[2]);
+    const lots = m && m[3] != null ? Number(m[3]) : 1;
+    if (!m || !isValidCode(code) || !(cost > 0) || !(lots > 0)) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '格式：買進 代號 成本 張數（張數不填預設1張，零股可用小數，例如0.1張＝100股）\n例如「買進 2412 163.5 2」',
+      });
+    }
+    const user = await store.getUser(userId);
+    const { positions, merged } = addPosition(user.positions, { code, cost, lots });
+    await store.saveUser(userId, { positions });
+    const label = stockLabel(code, loadNameMap());
+    const stopPrice = (merged ? merged.cost : cost) * (1 - user.stopLossPct / 100);
+    const lines = merged
+      ? [`已加碼 ${label} ${fmtLots(lots)}，合計 ${fmtLots(merged.lots)}，平均成本 ${fmt(merged.cost)}`]
+      : [`已記錄買進 ${label} ${fmtLots(lots)}，成本 ${fmt(cost)}`];
+    lines.push(`停損價 ${fmt(stopPrice)}（成本 −${user.stopLossPct}%）`, '傳「持股」可查看損益與出場檢查。');
+    return client.replyMessage(event.replyToken, { type: 'text', text: lines.join('\n') });
+  }
+
+  if (/^(賣出|賣掉)/.test(text)) {
+    const m = text.match(/^(?:賣出|賣掉)\s*([0-9A-Za-z]+)(?:\s+(\d+(?:\.\d+)?))?\s*張?$/);
+    const code = m && m[1].toUpperCase();
+    const lots = m && m[2] != null ? Number(m[2]) : null;
+    if (!m || !isValidCode(code) || (lots != null && !(lots > 0))) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '格式：賣出 代號 [張數]（不填張數＝全部賣出）\n例如「賣出 2412」「賣出 2412 1」',
+      });
+    }
+    const user = await store.getUser(userId);
+    const { positions, sold, remaining } = removePosition(user.positions, code, lots);
+    if (!sold) {
+      return client.replyMessage(event.replyToken, { type: 'text', text: `持股裡沒有 ${code}，傳「持股」查看目前紀錄。` });
+    }
+    await store.saveUser(userId, { positions });
+    const label = stockLabel(code, loadNameMap());
+    const lines = [`已記錄賣出 ${label} ${fmtLots(sold.lots)}${remaining ? `，剩 ${fmtLots(remaining)}` : '，已全部出清'}`];
+    const quote = (await fetchQuotes([code]).catch(() => new Map())).get(code);
+    if (quote) {
+      const pnl = (quote.close - sold.cost) * sold.lots * SHARES_PER_LOT;
+      lines.push(`以現價 ${fmt(quote.close)} 估算：損益 ${fmtSignedPct((quote.close / sold.cost - 1) * 100)}／${fmtMoney(pnl)}（未扣手續費與稅）`);
+    }
+    return client.replyMessage(event.replyToken, { type: 'text', text: lines.join('\n') });
+  }
+
+  if (['持股', '庫存', '我的持股'].includes(text)) {
+    try {
+      const message = await buildPositionsReport(await store.getUser(userId));
+      return client.replyMessage(event.replyToken, { type: 'text', text: message });
+    } catch (err) {
+      console.error('[positions] 失敗:', err);
+      return client.replyMessage(event.replyToken, { type: 'text', text: '持股資料抓取失敗，請稍後再試一次。' });
+    }
+  }
+
   if (['今日', '查看', '查詢', '計畫'].includes(text)) {
     const message = await buildTodayPlanMessage(await store.getUser(userId));
     return client.replyMessage(event.replyToken, { type: 'text', text: message });
@@ -132,10 +244,10 @@ async function handleEvent(event) {
 
   if (['盤中', '部位', '檢查'].includes(text)) {
     const today = await store.getUser(userId);
-    if (!today.watchlist.length) {
+    if (!today.watchlist.length && !today.positions.length) {
       return client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '尚未設定觀察標的，請先傳送「設定」指令。',
+        text: '尚未設定觀察標的或持股，請先傳「加 2330」或「買進 2330 成本 張數」。',
       });
     }
     try {
@@ -308,6 +420,12 @@ function helpText() {
     '備註 今天有法說會',
     '（支撐／壓力／停損價不用手動輸入，Bot 會自動算，停損規則預設20%）',
     '',
+    '加 代號 / 刪 代號 → 快速增減觀察名單（不會覆蓋整份名單），例如「加 2330 2454」「刪 2454」；傳「觀察名單」查看目前名單',
+    '',
+    '買進 代號 成本 張數 → 記錄持股，例如「買進 2412 163.5 2」（同一檔再買會自動算平均成本）',
+    '賣出 代號 [張數] → 記錄賣出，不填張數＝全部賣出',
+    '持股 → 查看每檔損益、持有天數、距離停損／20日均線多遠，並依回測同一套出場規則提醒該不該出場（盤中檢查也會一起列出）',
+    '',
     '今日 → 查看今天完整的交易計畫檢查清單（盤前掃描／開盤／盤中／收盤，含自動抓取的美股、台指期、總經事件、你的觀察標的價位）',
     '',
     '選股 → 不知道要看哪些股票時用。從全市場流動性前150大股票裡，篩出今天符合技術面進場條件的候選股，附即時基本面與異常標記（2年回測驗證過）',
@@ -316,7 +434,7 @@ function helpText() {
     '',
     '進場條件 [代號] → 逐項檢查觀察名單每一檔的進場條件（趨勢／相對強度／突破爆量）哪些成立、哪些還沒到，並列出下一交易日要突破的價位與量；也可指定代號，例如「進場條件 2330」',
     '',
-    '盤中 → 隨時查看台指期與觀察標的的即時報價（約15分鐘延遲），並標示是否跌破停損或20日均線',
+    '盤中 → 隨時查看台指期、持股與觀察標的的即時報價（約15分鐘延遲），並標示是否跌破停損或20日均線、持股是否觸發出場',
     '',
     'K線 [代號] → 查看K線圖（含20日均線），例如「K線 2330」；不加代號則顯示你觀察名單裡所有股票（最多10檔）。按「互動圖表」可開啟已畫好支撐／壓力／停損線、可拖曳縮放的圖表',
     '',
@@ -395,7 +513,7 @@ async function pushIntradayCheck() {
   for (const userId of subscribers) {
     try {
       const user = await store.getUser(userId);
-      if (!user.intradayPush || !user.watchlist.length) continue;
+      if (!user.intradayPush || (!user.watchlist.length && !user.positions.length)) continue;
       const { text } = await buildIntradayMessage(user);
       await client.pushMessage(userId, { type: 'text', text });
       sent++;

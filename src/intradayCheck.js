@@ -5,6 +5,7 @@ const { loadRecentDays } = require('../backtest/loadCache');
 const { buildSeriesByCode } = require('../backtest/buildSeries');
 const { annotateSeries } = require('../backtest/indicators');
 const { loadNameMap, stockLabel } = require('./stockNames');
+const { buildPositionLines } = require('./positions');
 
 function fmt(n) {
   return n == null ? '－' : n.toFixed(2);
@@ -44,9 +45,13 @@ async function buildIntradayMessage(today) {
   const levels = await buildLevelsForWatchlist(today.watchlist, today.stopLossPct);
   const levelByCode = new Map(levels.map((l) => [l.code, l]));
 
-  const [quotes, txf] = await Promise.all([
+  const [quotes, txf, positionResult] = await Promise.all([
     fetchQuotes(today.watchlist).catch(() => new Map()),
     fetchTxfSummary().catch(() => null),
+    buildPositionLines(today).catch((err) => {
+      console.error('[intradayCheck] 持股檢查失敗:', err.message);
+      return { lines: ['持股報價取得失敗'], exitCount: 0 };
+    }),
   ]);
   const ma20Map = getMa20Map(today.watchlist);
   const nameMap = loadNameMap();
@@ -69,13 +74,15 @@ async function buildIntradayMessage(today) {
     return q && l && !l.error && l.stopLoss != null && q.close <= l.stopLoss;
   });
 
-  const text = [
-    `⏱ 盤中檢查（${hh}:${mm}，報價約15分鐘延遲）`,
-    txfLine,
-    ...stockLines,
-  ].join('\n');
+  const sections = [[`⏱ 盤中檢查（${hh}:${mm}，報價約15分鐘延遲）`, txfLine].join('\n')];
+  if (positionResult.lines.length) {
+    const exitNote = positionResult.exitCount ? `　🚨 ${positionResult.exitCount} 檔觸發出場條件` : '';
+    sections.push([`【持股】${exitNote}`, ...positionResult.lines].join('\n'));
+  }
+  if (stockLines.length) sections.push(['【觀察名單】', ...stockLines].join('\n'));
+  const text = sections.join('\n\n');
 
-  return { text, hasBreach };
+  return { text, hasBreach: hasBreach || positionResult.exitCount > 0 };
 }
 
 module.exports = { buildIntradayMessage };

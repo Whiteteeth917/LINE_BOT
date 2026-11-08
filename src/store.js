@@ -32,6 +32,8 @@ function defaultsFor(userId) {
     dailyPush: true,
     // LINE 免費方案推播額度很少，盤中每天最多 8 則，預設只對擁有者開啟，其他人用指令自行開啟
     intradayPush: Boolean(isOwner),
+    // 持股紀錄：[{ code, cost, lots, buyDate: 'YYYYMMDD' }]，用「買進／賣出」指令維護
+    positions: [],
   };
 }
 

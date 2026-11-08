@@ -35,6 +35,10 @@ const DEFAULT_RS_PERCENTILE = 0.9;
 
 const VOLUME_SURGE_MULTIPLE = 1.5;
 
+// 出場規則（回測預設值）：收盤跌破「成本 −停損%」立即出場；持有滿 minHoldDays 個交易日後，
+// 收盤跌破 20 日均線出場；持有滿 maxHoldDays 個交易日一律出場。
+const EXIT_RULES = { minHoldDays: 15, maxHoldDays: 80 };
+
 // 把進場條件拆成逐項結果（給「進場條件」指令逐條顯示用），isEntrySignal 也共用這份判斷，確保兩邊邏輯一致。
 // 資料不足時回傳 null。
 function evaluateEntryConditions(row, sortedRet20, rsPercentile = DEFAULT_RS_PERCENTILE) {
@@ -66,4 +70,5 @@ module.exports = {
   percentileRank,
   DEFAULT_RS_PERCENTILE,
   VOLUME_SURGE_MULTIPLE,
+  EXIT_RULES,
 };

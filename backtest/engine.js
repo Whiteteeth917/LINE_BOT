@@ -1,5 +1,5 @@
 const { annotateSeries } = require('./indicators');
-const { buildSortedRet20ByDate, isEntrySignal, DEFAULT_RS_PERCENTILE } = require('./strategy');
+const { buildSortedRet20ByDate, isEntrySignal, DEFAULT_RS_PERCENTILE, EXIT_RULES } = require('./strategy');
 
 // 對單一個股序列跑訊號＋模擬進出場，回傳這檔股票所有交易紀錄
 function simulateOneStock(code, name, series, sortedRet20ByDate, params) {
@@ -64,8 +64,8 @@ function simulateOneStock(code, name, series, sortedRet20ByDate, params) {
 function runBacktest(seriesMap, universe, params = {}) {
   const cfg = {
     stopLossPct: params.stopLossPct ?? 20,
-    minHoldDays: params.minHoldDays ?? 15,
-    maxHoldDays: params.maxHoldDays ?? 80,
+    minHoldDays: params.minHoldDays ?? EXIT_RULES.minHoldDays,
+    maxHoldDays: params.maxHoldDays ?? EXIT_RULES.maxHoldDays,
     rsPercentile: params.rsPercentile ?? DEFAULT_RS_PERCENTILE,
     trailOn: params.trailOn ?? 'ma20',
   };
