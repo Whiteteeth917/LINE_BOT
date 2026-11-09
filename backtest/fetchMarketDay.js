@@ -14,7 +14,7 @@ function parseNumber(s) {
 async function fetchMarketDay(date) {
   const dateStr = toYYYYMMDD(date);
   const url = `https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date=${dateStr}&type=ALLBUT0999`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`TWSE HTTP ${res.status}`);
   const json = await res.json();
   if (json.stat !== 'OK') return null;

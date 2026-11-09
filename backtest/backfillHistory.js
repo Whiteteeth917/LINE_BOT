@@ -6,6 +6,7 @@ const { describeFetchError } = require('../src/fetchError');
 const CACHE_DIR = path.join(__dirname, 'cache');
 // 證交所限制約「每 5 秒 3 次請求」，超過會暫時封鎖 IP（雲端主機重啟後要整批回補，特別容易踩到）
 const DELAY_MS = 2000;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -30,6 +31,8 @@ async function backfillRange(start, end) {
   let skippedCached = 0;
   let skippedHoliday = 0;
   let failed = 0;
+  let consecutiveFailures = 0;
+  let aborted = false;
 
   for (const d of dates) {
     const key = toYYYYMMDD(d);
@@ -53,9 +56,17 @@ async function backfillRange(start, end) {
         fs.writeFileSync(file, JSON.stringify(rows));
         fetched++;
       }
+      consecutiveFailures = 0;
     } catch (err) {
       failed++;
+      consecutiveFailures++;
       console.warn(`[backfill] ${key} 失敗: ${describeFetchError(err)}`);
+      // 連續失敗多半是證交所整個連不上（例如 IP 被封鎖），繼續硬打每天都要等逾時，還可能延長封鎖，先停下來
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        console.warn(`[backfill] 連續 ${consecutiveFailures} 次失敗，證交所可能暫時連不上，先停止回補`);
+        aborted = true;
+        break;
+      }
     }
 
     if (fetched % 20 === 0 && fetched > 0) {
@@ -66,7 +77,7 @@ async function backfillRange(start, end) {
   }
 
   console.log(`完成。抓取 ${fetched}，快取略過 ${skippedCached}，假日略過 ${skippedHoliday}，失敗 ${failed}`);
-  return { fetched, skippedCached, skippedHoliday, failed };
+  return { fetched, skippedCached, skippedHoliday, failed, aborted };
 }
 
 function backfill(years = 2) {
