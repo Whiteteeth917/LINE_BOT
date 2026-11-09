@@ -58,6 +58,22 @@ function simulateOneStock(code, name, series, sortedRet20ByDate, params) {
     }
   }
 
+  // 「戰績」要看到還沒出場的部位：用最後一天收盤價算目前報酬，reason 標成 open
+  if (position && params.includeOpen) {
+    const last = series[series.length - 1];
+    trades.push({
+      code,
+      name,
+      entryDate: position.entryDate,
+      entryPrice: position.entryPrice,
+      exitDate: null,
+      exitPrice: last.close,
+      returnPct: (last.close / position.entryPrice - 1) * 100,
+      daysHeld: series.length - 1 - position.entryIndex,
+      reason: 'open',
+    });
+  }
+
   return trades;
 }
 
@@ -68,6 +84,7 @@ function runBacktest(seriesMap, universe, params = {}) {
     maxHoldDays: params.maxHoldDays ?? EXIT_RULES.maxHoldDays,
     rsPercentile: params.rsPercentile ?? DEFAULT_RS_PERCENTILE,
     trailOn: params.trailOn ?? 'ma20',
+    includeOpen: Boolean(params.includeOpen),
   };
 
   for (const series of seriesMap.values()) annotateSeries(series);

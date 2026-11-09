@@ -193,6 +193,7 @@ async function buildPositionLines(user) {
 
 module.exports = {
   addPosition,
+  todayTaipei,
   removePosition,
   buildPositionsReport,
   buildPositionLines,

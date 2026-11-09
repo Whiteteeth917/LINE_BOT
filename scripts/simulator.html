@@ -69,6 +69,7 @@
     flex: 0 0 auto; border: 1px solid #fff; background: var(--chip); border-radius: 16px;
     padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--text);
   }
+  .chips button.trigger { border-color: #f5a623; background: #fff4e0; }
   form { display: flex; gap: 8px; padding: 10px 12px; background: #fff; align-items: flex-end; }
   textarea {
     flex: 1; resize: none; border: 1px solid #ccd; border-radius: 18px; padding: 9px 14px;
@@ -108,7 +109,7 @@ const sendBtn = document.getElementById('sendBtn');
 
 const QUICK = [
   '說明', '今日', '選股', '類股 半導體', '進場條件', '查 2330', '加 2330 2454', '觀察名單',
-  '買進 2412 160 2', '持股', '盤中', 'K線 2330', '提醒 2330 2500', '提醒',
+  '買進 2412 160 2', '持股', '盤中', 'K線 2330', '提醒 2330 2500', '提醒', '戰績',
 ];
 const chips = document.getElementById('chips');
 for (const q of QUICK) {
@@ -116,6 +117,36 @@ for (const q of QUICK) {
   b.textContent = q;
   b.onclick = () => send(q);
   chips.appendChild(b);
+}
+// 排程推播：正式環境只在交易日固定時間跑，這裡可以手動觸發看看推播長什麼樣子
+const TRIGGERS = [['⏰ 收盤訊號推播', 'signal'], ['⏰ 早上每日計畫', 'daily']];
+for (const [label, job] of TRIGGERS) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.className = 'trigger';
+  b.onclick = () => trigger(job, label);
+  chips.appendChild(b);
+}
+
+async function trigger(job, label) {
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.textContent = `觸發「${label.replace('⏰ ', '')}」中…`;
+  log.appendChild(typing);
+  log.scrollTop = log.scrollHeight;
+  try {
+    const data = await (await fetch(`/api/trigger/${job}`, { method: 'POST' })).json();
+    typing.remove();
+    if (data.error) addRow('bot', textBubble(`⚠️ ${data.error}`));
+    else if (!data.messages.length) {
+      addRow('bot', textBubble(job === 'signal'
+        ? '（沒有推播：觀察名單裡沒有股票「全部到齊」或「只差一項」，或訊號推播已關閉。正式環境這種情況也不會推。）'
+        : '（沒有推播：每日推播可能已關閉）', 'push'));
+    } else data.messages.forEach((m) => renderMessage(m, 'push'));
+  } catch (err) {
+    typing.remove();
+    addRow('bot', textBubble(`⚠️ ${err.message}`));
+  }
 }
 
 function now() {

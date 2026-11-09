@@ -37,6 +37,9 @@ function defaultsFor(userId) {
     positions: [],
     // 到價提醒：[{ code, price, direction: 'above' | 'below', createdAt }]，觸發一次後自動刪除
     alerts: [],
+    // 收盤訊號通知（觀察名單有股票全部到齊或只差一項時推播），lastSignalDate 用來避免同一天重複推
+    signalPush: true,
+    lastSignalDate: null,
   };
 }
 
@@ -93,9 +96,9 @@ function loadFileDb() {
   const db = readJson(USERS_PATH, null);
   if (db) return db;
 
-  // 從舊版單一使用者格式搬過來
+  // 從舊版單一使用者格式搬過來（另外指定 USERS_FILE 時，例如模擬器，不要把真實使用者搬進去）
   const fresh = { users: {}, subscribers: [] };
-  const legacyId = readJson(LEGACY_SUBSCRIBER_PATH, {}).userId;
+  const legacyId = process.env.USERS_FILE ? null : readJson(LEGACY_SUBSCRIBER_PATH, {}).userId;
   if (legacyId) {
     const legacyToday = readJson(LEGACY_TODAY_PATH, {});
     fresh.users[legacyId] = {

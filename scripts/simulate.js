@@ -38,7 +38,7 @@ sdk.Client.prototype.pushMessage = async function (to, messages) {
   pushed.push(...(Array.isArray(messages) ? messages : [messages]));
 };
 
-require('../src/index');
+const jobs = require('../src/index');
 
 // ---- 模擬器網頁＋API ----
 const express = require('express');
@@ -74,6 +74,22 @@ app.post('/api/send', async (req, res) => {
     const messages = pendingReplies.get(replyToken) || [];
     pendingReplies.delete(replyToken);
     res.json({ status, messages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 手動觸發排程推播（正式環境只會在交易日固定時間跑）
+const TRIGGERS = {
+  signal: () => jobs.pushSignalAlerts({ force: true }),
+  daily: () => jobs.pushDailyPlan(),
+};
+app.post('/api/trigger/:job', async (req, res) => {
+  const run = TRIGGERS[req.params.job];
+  if (!run) return res.status(404).json({ error: 'unknown job' });
+  try {
+    await run();
+    res.json({ messages: pushed.splice(0) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

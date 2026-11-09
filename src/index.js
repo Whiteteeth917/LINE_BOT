@@ -35,6 +35,10 @@ const {
   checkAlerts,
   fmt: fmtAlert,
 } = require('./priceAlerts');
+const { buildSignalMessages } = require('./signalAlerts');
+const { todayTaipei } = require('./positions');
+const { computeRecentPerformance } = require('../backtest/recentPerformance');
+const { formatRecentPerformance } = require('../backtest/formatRecentPerformance');
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -50,6 +54,8 @@ const INTRADAY_WINDOW = [{ h: 9, m: 30 }, { h: 13, m: 0 }];
 // 到價提醒：交易時段內每 5 分鐘檢查一次（09:00~13:30）
 const ALERT_CRON = process.env.ALERT_CRON || '*/5 9-13 * * 1-5';
 const ALERT_WINDOW = [{ h: 9, m: 0 }, { h: 13, m: 30 }];
+// 收盤訊號通知：證交所當日行情大約 14:00~15:00 後才會出來，15:00 跑一次、16:00 補跑（已通知過的人不會重複收到）
+const SIGNAL_CRON = process.env.SIGNAL_CRON || '0 15,16 * * 1-5';
 
 const client = new Client(lineConfig);
 const app = express();
@@ -107,9 +113,9 @@ async function handleEvent(event) {
   await store.addSubscriber(userId);
   const text = event.message.text.trim();
 
-  const pushToggle = text.match(/^(每日|盤中)推播\s*(開啟|關閉|開|關)$/);
+  const pushToggle = text.match(/^(每日|盤中|訊號)推播\s*(開啟|關閉|開|關)$/);
   if (pushToggle) {
-    const field = pushToggle[1] === '每日' ? 'dailyPush' : 'intradayPush';
+    const field = { 每日: 'dailyPush', 盤中: 'intradayPush', 訊號: 'signalPush' }[pushToggle[1]];
     const on = pushToggle[2].startsWith('開');
     await store.saveUser(userId, { [field]: on });
     return client.replyMessage(event.replyToken, {
@@ -225,6 +231,16 @@ async function handleEvent(event) {
       lines.push(`以現價 ${fmt(quote.close)} 估算：損益 ${fmtSignedPct((quote.close / sold.cost - 1) * 100)}／${fmtMoney(pnl)}（未扣手續費與稅）`);
     }
     return client.replyMessage(event.replyToken, { type: 'text', text: lines.join('\n') });
+  }
+
+  if (['戰績', '績效'].includes(text)) {
+    try {
+      const message = formatRecentPerformance(computeRecentPerformance());
+      return client.replyMessage(event.replyToken, { type: 'text', text: message });
+    } catch (err) {
+      console.error('[recentPerformance] 失敗:', err);
+      return client.replyMessage(event.replyToken, { type: 'text', text: `戰績統計失敗：${err.message}` });
+    }
   }
 
   if (['持股', '庫存', '我的持股'].includes(text)) {
@@ -540,13 +556,16 @@ function helpText() {
     '',
     'K線 [代號] → 查看K線圖（含20日均線），例如「K線 2330」；不加代號則顯示你觀察名單裡所有股票（最多10檔）。按「互動圖表」可開啟已畫好支撐／壓力／停損線、可拖曳縮放的圖表',
     '',
-    '每日推播 開／關、盤中推播 開／關 → 開關自動推播（盤中推播預設關閉）',
+    '戰績 → 用最近幾個月的真實行情，統計「選股」訊號照出場規則操作的勝率、平均報酬、獲利因子，並列出還在持有中的訊號，跟2年回測對照',
+    '',
+    '每日推播 開／關、盤中推播 開／關、訊號推播 開／關 → 開關自動推播（盤中推播預設關閉）',
     '',
     '說明 / 指令 / help → 顯示這份指令列表',
     '',
     `【自動推播】每個交易日 ${PUSH_CRON}（${CRON_TIMEZONE}）推播一次每日計畫；`,
     `盤中推播開啟時，09:30~13:00 每 30 分鐘（cron: ${INTRADAY_CRON}）推播一次部位檢查。`,
     '到價提醒觸發時會另外推播（每則提醒只推一次）。',
+    '訊號推播開啟時（預設開啟），每個交易日收盤後檢查觀察名單，有股票「6項全部到齊」或「只差1項」才推播。',
   ].join('\n');
 }
 
@@ -672,6 +691,53 @@ async function pushPriceAlerts() {
 cron.schedule(PUSH_CRON, pushDailyPlan, { timezone: CRON_TIMEZONE });
 cron.schedule(INTRADAY_CRON, pushIntradayCheck, { timezone: CRON_TIMEZONE });
 cron.schedule(ALERT_CRON, pushPriceAlerts, { timezone: CRON_TIMEZONE });
+cron.schedule(SIGNAL_CRON, () => pushSignalAlerts(), { timezone: CRON_TIMEZONE });
+
+// force：模擬器用，忽略「今天的收盤資料出來了沒」與「今天通知過了沒」，直接用最近一天的資料推
+async function pushSignalAlerts({ force = false } = {}) {
+  const today = todayTaipei();
+  const subscribers = await store.listSubscribers().catch(() => []);
+  const users = [];
+  for (const userId of subscribers) {
+    try {
+      const user = await store.getUser(userId);
+      if (!user.signalPush || !user.watchlist.length) continue;
+      if (!force && user.lastSignalDate === today) continue;
+      users.push({ userId, user });
+    } catch (err) {
+      console.error(`[pushSignalAlerts] 讀取 ${userId} 失敗:`, err.message);
+    }
+  }
+  if (!users.length) return;
+
+  let result;
+  try {
+    result = await buildSignalMessages(users, force ? null : today);
+  } catch (err) {
+    console.error('[pushSignalAlerts] 進場條件計算失敗:', err.message);
+    return;
+  }
+  if (!result.date) {
+    console.log('[pushSignalAlerts] 今天的收盤資料還沒出來（或休市），略過');
+    return;
+  }
+
+  const textByUser = new Map(result.messages.map((m) => [m.userId, m.text]));
+  let sent = 0;
+  for (const { userId } of users) {
+    try {
+      // 不論有沒有訊息都記下今天已檢查，16:00 補跑時就不會重複推播
+      if (!force) await store.saveUser(userId, { lastSignalDate: today });
+      const text = textByUser.get(userId);
+      if (!text) continue;
+      await client.pushMessage(userId, { type: 'text', text });
+      sent++;
+    } catch (err) {
+      console.error(`[pushSignalAlerts] 推播給 ${userId} 失敗:`, err.message);
+    }
+  }
+  console.log(`[pushSignalAlerts] 檢查 ${users.length} 人，推播 ${sent} 人`, new Date().toISOString());
+}
 
 // 啟動時在背景補齊最近的歷史行情快取。雲端部署（Render 等）的映像檔不含 backtest/cache，
 // 選股／類股需要至少 80 個交易日（含 60 日均線），預設回補 200 個日曆天（約 135 個交易日）。
@@ -704,3 +770,6 @@ app.listen(port, () => {
   console.log(`內容模式: ${CONTENT_MODE}｜排程: ${PUSH_CRON} (${CRON_TIMEZONE})｜資料儲存: ${store.backendName}`);
   warmupCache();
 });
+
+// 給本機模擬器手動觸發排程推播用（正式環境由 cron 觸發）
+module.exports = { pushSignalAlerts, pushPriceAlerts, pushIntradayCheck, pushDailyPlan };
