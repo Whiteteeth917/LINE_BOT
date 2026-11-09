@@ -67,7 +67,7 @@ function formatEntryConditions(result) {
     '※ 進場參考區／目標／停損為前一交易日樞紐點公式算出的客觀價位，不是預測。僅供參考，非投資建議。',
   ].join('\n');
 
-  return [header, ...blocks, footer].join('\n\n');
+  return [header, ...blocks, footer, result.dataNote].filter(Boolean).join('\n\n');
 }
 
 module.exports = { formatEntryConditions };

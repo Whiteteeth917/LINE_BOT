@@ -1,7 +1,7 @@
 // 「戰績」：用最近的真實每日行情，重跑「選股」在每一天會給出的訊號，並照出場規則追蹤到今天。
 // 訊號是由當天收盤資料決定的（同一套程式、同一份資料，結果是確定的），
 // 所以不必另外存訊號紀錄，就能知道過去每天「選股」會列出哪些股票、後來表現如何。
-const { loadRecentDays } = require('./loadCache');
+const { loadRecentDays, dataSourceNote } = require('./loadCache');
 const { buildUniverse } = require('./universe');
 const { buildSeriesByCode } = require('./buildSeries');
 const { runBacktest } = require('./engine');
@@ -31,6 +31,7 @@ function computeRecentPerformance() {
   const open = inPeriod.filter((t) => t.reason === 'open');
 
   const result = {
+    dataNote: dataSourceNote(days),
     periodStart,
     periodEnd: latestDate,
     tradingDays: days.length - WARMUP_BARS,

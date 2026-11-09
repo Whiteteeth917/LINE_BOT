@@ -12,7 +12,7 @@ function formatScreenResult(result) {
   const header = `🔍 今日技術面選股候選（${dateLabel} 收盤資料）\n股票池：日均成交金額前 ${universeSize} 檔｜符合技術訊號：${totalSignals} 檔`;
 
   if (candidates.length === 0) {
-    return `${header}\n\n今天沒有股票同時符合趨勢、相對強度與突破條件，觀望為主。`;
+    return [`${header}\n\n今天沒有股票同時符合趨勢、相對強度與突破條件，觀望為主。`, result.dataNote].filter(Boolean).join('\n\n');
   }
 
   const blocks = candidates.map((c, idx) => {
@@ -28,7 +28,7 @@ function formatScreenResult(result) {
 
   const footer = '※ 技術面訊號為 2 年回測驗證過（勝率約 51.9%、平均持有22.5個交易日、獲利因子 3.30）；基本面與異常標記為即時資料，未經回測驗證，僅供參考，非投資建議。';
 
-  return [header, ...blocks, footer].join('\n\n');
+  return [header, ...blocks, footer, result.dataNote].filter(Boolean).join('\n\n');
 }
 
 module.exports = { formatScreenResult };

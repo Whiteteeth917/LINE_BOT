@@ -7,6 +7,9 @@ const CACHE_DIR = path.join(__dirname, 'cache');
 // 證交所限制約「每 5 秒 3 次請求」，超過會暫時封鎖 IP（雲端主機重啟後要整批回補，特別容易踩到）
 const DELAY_MS = 2000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+// 剛放棄過（證交所連不上）的話，10 分鐘內直接跳過，不要讓每個指令都等好幾次逾時
+const ABORT_COOLDOWN_MS = 10 * 60 * 1000;
+let lastAbortAt = 0;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -18,6 +21,9 @@ function isWeekday(d) {
 }
 
 async function backfillRange(start, end) {
+  if (Date.now() - lastAbortAt < ABORT_COOLDOWN_MS) {
+    return { fetched: 0, skippedCached: 0, skippedHoliday: 0, failed: 0, aborted: true, cooldown: true };
+  }
   if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
   const dates = [];
@@ -65,6 +71,7 @@ async function backfillRange(start, end) {
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         console.warn(`[backfill] 連續 ${consecutiveFailures} 次失敗，證交所可能暫時連不上，先停止回補`);
         aborted = true;
+        lastAbortAt = Date.now();
         break;
       }
     }

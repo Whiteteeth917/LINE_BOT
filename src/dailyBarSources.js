@@ -24,11 +24,16 @@ function taipeiDateOf(unixSec) {
 }
 
 // bars: [{ date: 'YYYYMMDD', open, high, low, close }]，任意順序
-function latestCompletedBar(bars) {
+// 這一天的日K是否已經定案（今天要等到 14:00 後）
+function isCompletedBarDate(date) {
   const now = taipeiNow();
+  return date < now.date || (date === now.date && now.minutes >= SESSION_FINAL_MINUTES);
+}
+
+function latestCompletedBar(bars) {
   const usable = bars
     .filter((b) => b.high != null && b.low != null && b.close != null)
-    .filter((b) => b.date < now.date || (b.date === now.date && now.minutes >= SESSION_FINAL_MINUTES))
+    .filter((b) => isCompletedBarDate(b.date))
     .sort((a, b) => a.date.localeCompare(b.date));
   return usable[usable.length - 1] || null;
 }
@@ -112,4 +117,4 @@ async function fetchLatestBar(code) {
   throw new Error('查無資料');
 }
 
-module.exports = { fetchLatestBar, latestCompletedBar };
+module.exports = { fetchLatestBar, latestCompletedBar, isCompletedBarDate, taipeiNow, taipeiDateOf };

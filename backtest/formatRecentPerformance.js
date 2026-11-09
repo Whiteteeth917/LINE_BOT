@@ -70,6 +70,7 @@ function formatRecentPerformance(r) {
     '※ 這段期間可能與策略調參用的資料重疊，不算完全獨立的驗證；筆數少時結果波動很大，參考就好。非投資建議。',
   ].join('\n'));
 
+  if (r.dataNote) sections.push(r.dataNote);
   return sections.join('\n\n');
 }
 

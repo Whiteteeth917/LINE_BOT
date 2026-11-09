@@ -1,5 +1,5 @@
 const { backfillRecentDays } = require('./backfillHistory');
-const { loadRecentDays } = require('./loadCache');
+const { loadRecentDays, dataSourceNote } = require('./loadCache');
 const { buildUniverse } = require('./universe');
 const { buildSeriesByCode } = require('./buildSeries');
 const { annotateSeries } = require('./indicators');
@@ -87,7 +87,7 @@ async function checkWatchlistEntry(codes, { stopLossPct = 20, topN = 150, rsPerc
     };
   });
 
-  return { date: latestDate, poolSize: sortedRet20.length, rsPercentile, rsThresholdRet20, results };
+  return { date: latestDate, poolSize: sortedRet20.length, rsPercentile, rsThresholdRet20, results, dataNote: dataSourceNote(days.slice(-80)) };
 }
 
 module.exports = { checkWatchlistEntry };

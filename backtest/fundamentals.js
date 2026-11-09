@@ -9,7 +9,7 @@ const PUNISH_URL = 'https://openapi.twse.com.tw/v1/announcement/punish';
 const INSIDER_TRANSFER_URL = 'https://openapi.twse.com.tw/v1/opendata/t187ap12_L';
 
 async function fetchJson(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.json();
 }

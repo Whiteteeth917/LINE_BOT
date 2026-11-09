@@ -1,5 +1,5 @@
 const { backfillRecentDays } = require('./backfillHistory');
-const { loadAllDays } = require('./loadCache');
+const { loadAllDays, dataSourceNote } = require('./loadCache');
 const { buildUniverse } = require('./universe');
 const { buildSeriesByCode } = require('./buildSeries');
 const { annotateSeries } = require('./indicators');
@@ -13,7 +13,7 @@ const {
 
 // 回傳今天（最近一個交易日）符合技術面訊號的候選股，附上基本面／異常標記資訊（純呈現，不自動排除）
 async function screenToday({ topN = 150, rsPercentile = DEFAULT_RS_PERCENTILE, maxResults = 10 } = {}) {
-  await backfillRecentDays(10);
+  await backfillRecentDays(10).catch((err) => console.error('[screenToday] 回補失敗:', err.message));
 
   const days = loadAllDays();
   if (days.length < 80) {
@@ -62,6 +62,7 @@ async function screenToday({ topN = 150, rsPercentile = DEFAULT_RS_PERCENTILE, m
   });
 
   return {
+    dataNote: dataSourceNote(days.slice(-80)),
     date: latestDate,
     universeSize: universe.length,
     totalSignals: technicalCandidates.length,

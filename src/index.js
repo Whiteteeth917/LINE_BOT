@@ -21,6 +21,7 @@ const { buildCandlestickUrls } = require('./candlestickChart');
 const { buildChartData, renderChartPage, renderNotFound, isValidCode } = require('./chartPage');
 const { loadNameMap, stockLabel } = require('./stockNames');
 const { backfillRecentDays } = require('../backtest/backfillHistory');
+const { refreshYahooHistoryIfStale, readMeta: readYahooMeta } = require('../backtest/yahooHistory');
 const { checkWatchlistEntry } = require('../backtest/watchlistEntry');
 const { formatEntryConditions } = require('../backtest/formatEntryConditions');
 const { addPosition, removePosition, buildPositionsReport, fmt, fmtLots, fmtMoney, fmtSignedPct, SHARES_PER_LOT } = require('./positions');
@@ -751,7 +752,9 @@ function warmupCache() {
   return backfillRecentDays(WARMUP_DAYS)
     .then((r) => {
       if (r.aborted || r.failed) {
-        console.warn(`[warmup] 行情快取回補未完成（失敗 ${r.failed} 天），${WARMUP_RETRY_MS / 60000} 分鐘後重試`);
+        console.warn(`[warmup] 行情快取回補未完成（失敗 ${r.failed} 天${r.cooldown ? '，冷卻中' : ''}），${WARMUP_RETRY_MS / 60000} 分鐘後重試`);
+        // 證交所連不上：改用 Yahoo 建立選股／進場條件／戰績需要的歷史行情（已經是最新的就不重抓）
+        refreshYahooHistoryIfStale();
         setTimeout(warmupCache, WARMUP_RETRY_MS);
         return;
       }
@@ -760,11 +763,15 @@ function warmupCache() {
     })
     .catch((err) => {
       console.error('[warmup] 行情快取回補失敗:', err.message);
+      refreshYahooHistoryIfStale();
       setTimeout(warmupCache, WARMUP_RETRY_MS);
     });
 }
 
-app.get('/healthz', (_req, res) => res.json({ ok: true, cacheReady: warmupDone }));
+app.get('/healthz', (_req, res) => {
+  const yahoo = readYahooMeta();
+  res.json({ ok: true, cacheReady: warmupDone, yahooBackup: yahoo ? { builtAt: yahoo.builtAt, stocks: yahoo.stocks, latestDate: yahoo.latestDate } : null });
+});
 
 // 診斷用：確認在部署環境裡報價來源是否可用、實際用的是哪個來源（只回傳公開行情，不含任何設定）
 app.get('/diag/quotes', async (_req, res) => {
@@ -827,7 +834,8 @@ app.get('/diag/sources', async (_req, res) => {
     const ok = x.reachable && x.dataOk !== false && !(x.status === 429);
     return `${ok ? '✅' : '❌'} [${x.group}] ${x.name}`;
   });
-  res.json({ checkedAt: new Date().toISOString(), cacheReady: warmupDone, summary, results });
+  const yahoo = readYahooMeta();
+  res.json({ checkedAt: new Date().toISOString(), cacheReady: warmupDone, yahooBackup: yahoo, summary, results });
 });
 
 const port = process.env.PORT || 3000;
