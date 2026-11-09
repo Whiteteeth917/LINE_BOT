@@ -28,7 +28,9 @@ function getMa20Map(codes) {
 
 function buildStockLine(label, quote, level, ma20) {
   if (!quote) return `${label}　報價取得失敗`;
-  if (!level || level.error) return `${label}　現價 ${fmt(quote.close)}（無支撐壓力資料）`;
+  if (!level || level.error) {
+    return `${label}　現價 ${fmt(quote.close)}（無支撐壓力資料${level && level.error ? `：${level.error}` : ''}）`;
+  }
 
   const flags = [];
   if (level.stopLoss != null && quote.close <= level.stopLoss) flags.push('🔴 已跌破停損！');

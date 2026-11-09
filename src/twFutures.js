@@ -29,12 +29,13 @@ async function fetchFromTradingView() {
   return { close, changePct, open, high, low, volume, source: 'tradingview' };
 }
 
-async function fetchFromTaifexMis() {
+// marketType: '0'＝一般交易時段（日盤 08:45~13:45），'1'＝盤後交易時段（夜盤 15:00~隔天 05:00）
+async function fetchTaifexSession(marketType) {
   const res = await fetch(TAIFEX_MIS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'User-Agent': 'Mozilla/5.0' },
     body: JSON.stringify({
-      MarketType: '0', // 0＝一般交易時段
+      MarketType: marketType,
       SymbolType: 'F',
       KindID: '1',
       CID: 'TXF',
@@ -53,6 +54,8 @@ async function fetchFromTaifexMis() {
   if (!row) throw new Error(`TAIFEX MIS 無資料 (${json?.RtMsg || 'empty'})`);
 
   const num = (s) => (s === '' || s == null ? null : parseFloat(s));
+  // 還沒開盤時合約列還在，但成交價是空字串：視為這個時段沒資料，不要回傳一堆 null
+  if (num(row.CLastPrice) == null) return null;
   return {
     close: num(row.CLastPrice),
     changePct: num(row.CDiffRate) ?? 0,
@@ -60,8 +63,18 @@ async function fetchFromTaifexMis() {
     high: num(row.CHighPrice),
     low: num(row.CLowPrice),
     volume: num(row.CTotalVolume),
-    source: 'taifex-mis',
+    source: marketType === '1' ? 'taifex-mis-night' : 'taifex-mis',
+    session: marketType === '1' ? 'night' : 'day',
   };
+}
+
+// 日盤有成交就用日盤；日盤還沒開（例如早上 07:30）就改用夜盤，兩邊都沒有才算失敗
+async function fetchFromTaifexMis() {
+  const day = await fetchTaifexSession('0');
+  if (day) return day;
+  const night = await fetchTaifexSession('1');
+  if (night) return night;
+  throw new Error('TAIFEX MIS 日盤與夜盤都沒有成交資料');
 }
 
 async function fetchTxfSummary() {

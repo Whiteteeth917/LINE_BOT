@@ -1,9 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { fetchMarketDay, toYYYYMMDD } = require('./fetchMarketDay');
+const { describeFetchError } = require('../src/fetchError');
 
 const CACHE_DIR = path.join(__dirname, 'cache');
-const DELAY_MS = 350;
+// 證交所限制約「每 5 秒 3 次請求」，超過會暫時封鎖 IP（雲端主機重啟後要整批回補，特別容易踩到）
+const DELAY_MS = 2000;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -53,7 +55,7 @@ async function backfillRange(start, end) {
       }
     } catch (err) {
       failed++;
-      console.warn(`[backfill] ${key} 失敗: ${err.message}`);
+      console.warn(`[backfill] ${key} 失敗: ${describeFetchError(err)}`);
     }
 
     if (fetched % 20 === 0 && fetched > 0) {

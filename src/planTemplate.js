@@ -53,9 +53,10 @@ function buildEconomicEventsBlock(events) {
 
 function buildTxfLine(txf) {
   if (txf === undefined) return null;
-  if (txf == null) return '台指期（夜盤）：資料取得失敗，請自行查詢';
+  if (txf == null || txf.close == null) return '台指期：資料取得失敗，請自行查詢';
   const sign = txf.changePct > 0 ? '+' : '';
-  return `台指期（夜盤，約15分鐘延遲）：${txf.close}　${sign}${txf.changePct.toFixed(2)}%　區間 ${txf.low}-${txf.high}`;
+  const session = txf.session === 'day' ? '日盤' : txf.session === 'night' ? '夜盤' : '近月';
+  return `台指期（${session}，約15分鐘延遲）：${txf.close}　${sign}${txf.changePct.toFixed(2)}%　區間 ${txf.low}-${txf.high}`;
 }
 
 function buildPlanMessage(today, levels, date = new Date(), commentary = null, usMarket = null, economicEvents = undefined, txf = undefined) {

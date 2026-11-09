@@ -63,7 +63,7 @@ async function fetchRecentInstitutionalFlow(recentDates) {
         sums.set(code, acc);
       }
     }
-    await sleep(300);
+    await sleep(2000); // 證交所限制約每 5 秒 3 次請求
   }
 
   const result = new Map();

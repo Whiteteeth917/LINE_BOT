@@ -764,6 +764,30 @@ app.get('/diag/quotes', async (_req, res) => {
   res.json({ quotes, txf });
 });
 
+// 診斷用：從伺服器所在位置逐一測試每個外部資料來源能不能連（只打公開行情網址，不含任何設定或使用者資料）
+app.get('/diag/sources', async (_req, res) => {
+  const { describeFetchError } = require('./fetchError');
+  const probes = {
+    'www.twse.com.tw（K線快取、支撐壓力備援）': 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&stockNo=2330',
+    'openapi.twse.com.tw（支撐壓力、基本面）': 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
+    'mis.twse.com.tw（個股報價備援）': 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_2330.tw&json=1&delay=0',
+    'mis.taifex.com.tw（台指期備援）': 'https://mis.taifex.com.tw/futures/api/getQuoteList',
+    'scanner.tradingview.com（報價主要來源）': 'https://scanner.tradingview.com/global/scan',
+  };
+  const results = await Promise.all(Object.entries(probes).map(async ([name, url]) => {
+    const started = Date.now();
+    try {
+      const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+      await r.arrayBuffer();
+      // 期交所與 TradingView 的端點要求 POST，GET 回 4xx 也代表「連得上」，這裡只檢查連線層
+      return [name, { reachable: true, status: r.status, ms: Date.now() - started }];
+    } catch (err) {
+      return [name, { reachable: false, error: describeFetchError(err), ms: Date.now() - started }];
+    }
+  }));
+  res.json({ checkedAt: new Date().toISOString(), cacheReady: warmupDone, results: Object.fromEntries(results) });
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
