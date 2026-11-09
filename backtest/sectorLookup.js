@@ -49,7 +49,7 @@ let cachedCategories = null;
 async function loadIndustryMap() {
   if (cachedCodeToIndustry) return cachedCodeToIndustry;
 
-  const res = await fetch(REVENUE_URL, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const res = await fetch(REVENUE_URL, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const rows = await res.json();
 

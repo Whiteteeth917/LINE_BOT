@@ -12,7 +12,7 @@ function parseNumber(s) {
 
 async function fetchMonth(stockNo, monthDate) {
   const url = `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${toQueryDate(monthDate)}&stockNo=${stockNo}`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`TWSE HTTP ${res.status}`);
   const json = await res.json();
   if (json.stat !== 'OK' || !Array.isArray(json.data)) return [];

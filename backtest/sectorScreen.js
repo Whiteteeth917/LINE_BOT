@@ -1,4 +1,4 @@
-const { loadAllDays } = require('./loadCache');
+const { loadRecentDays } = require('./loadCache');
 const { buildSeriesByCode } = require('./buildSeries');
 const { annotateSeries } = require('./indicators');
 const { buildSortedRet20ByDate, isEntrySignal } = require('./strategy');
@@ -25,7 +25,9 @@ async function screenBySector(keyword) {
 
   const codes = await getCodesByCategory(category);
 
-  const days = loadAllDays();
+  // 只需要算到季線走揚（約 65 根K棒）＋過濾 80 根，讀最近 100 個交易日就夠，不必載入整份歷史
+  const days = loadRecentDays(100);
+  if (!days.length) throw new Error('行情資料還沒下載完成，請稍後再試');
   const seriesMap = buildSeriesByCode(days, codes);
   for (const s of seriesMap.values()) annotateSeries(s);
   const sortedRet20ByDate = buildSortedRet20ByDate(seriesMap);
@@ -86,7 +88,7 @@ async function screenBySector(keyword) {
     return (b.ret20 ?? -Infinity) - (a.ret20 ?? -Infinity);
   });
 
-  return { matched: true, category, results: results.slice(0, 10), total: results.length };
+  return { matched: true, category, results: results.slice(0, 10), total: results.length, flowDays: flowMap.daysCovered || 0 };
 }
 
 module.exports = { screenBySector };

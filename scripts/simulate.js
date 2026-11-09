@@ -22,7 +22,8 @@ Object.assign(process.env, {
   UPSTASH_REDIS_REST_URL: '',
   UPSTASH_REDIS_REST_TOKEN: '',
   LINE_USER_ID: '',
-  USERS_FILE: path.join(__dirname, '..', 'data', 'simulator-users.json'),
+  // SIM_USERS_FILE：自動化測試用另一個檔案，不動到你在網頁上試玩的資料
+  USERS_FILE: process.env.SIM_USERS_FILE || path.join(__dirname, '..', 'data', 'simulator-users.json'),
 });
 
 // ---- 攔截 LINE 回覆 ----
@@ -83,6 +84,9 @@ app.post('/api/send', async (req, res) => {
 const TRIGGERS = {
   signal: () => jobs.pushSignalAlerts({ force: true }),
   daily: () => jobs.pushDailyPlan(),
+  // 這兩個只在交易時段（盤中 09:30~13:00、到價提醒 09:00~13:30）才會真的檢查
+  intraday: () => jobs.pushIntradayCheck(),
+  alerts: () => jobs.pushPriceAlerts(),
 };
 app.post('/api/trigger/:job', async (req, res) => {
   const run = TRIGGERS[req.params.job];

@@ -2,6 +2,8 @@
 // 主要來源：TradingView 公開 scanner 端點（免費、不需金鑰，非官方 API）。
 // 備援來源：證交所「基本市況報導」MIS API。TradingView 會擋部分雲端主機 IP（例如 Render），
 // 失敗時自動改用官方來源，兩邊回傳格式一致：Map<code, { close, changePct, source }>。
+// 第三順位：Yahoo Finance。雲端主機有時候證交所整個連不上、TradingView 又在限流（HTTP 429），
+// Yahoo 是目前確認從 Render 連得上的來源；逐檔查詢，上市 .TW、上櫃 .TWO 都支援。
 const TV_URL = 'https://scanner.tradingview.com/global/scan';
 const TWSE_MIS_URL = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
 
@@ -61,6 +63,33 @@ async function fetchFromTwseMis(codes) {
   return map;
 }
 
+async function fetchYahooOne(code) {
+  for (const suffix of ['.TW', '.TWO']) {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(code + suffix)}?range=1d&interval=1d`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+    if (res.status === 404) continue;
+    if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
+    const meta = (await res.json())?.chart?.result?.[0]?.meta;
+    const close = meta && meta.regularMarketPrice;
+    if (close == null) continue;
+    const prev = meta.chartPreviousClose ?? meta.previousClose;
+    return { close, changePct: prev ? ((close - prev) / prev) * 100 : 0, source: 'yahoo' };
+  }
+  return null;
+}
+
+async function fetchFromYahoo(codes) {
+  const map = new Map();
+  const results = await Promise.allSettled(codes.map((c) => fetchYahooOne(c)));
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value) map.set(codes[i], r.value);
+  });
+  if (!map.size && results.some((r) => r.status === 'rejected')) {
+    throw results.find((r) => r.status === 'rejected').reason;
+  }
+  return map;
+}
+
 async function fetchQuotes(codes) {
   if (!codes.length) return new Map();
 
@@ -78,6 +107,16 @@ async function fetchQuotes(codes) {
       for (const [code, q] of fallback) map.set(code, q);
     } catch (err) {
       console.error('[fetchQuotes] 證交所 MIS 也失敗:', err.message);
+    }
+  }
+
+  const stillMissing = codes.filter((c) => !map.has(c));
+  if (stillMissing.length) {
+    try {
+      const fallback = await fetchFromYahoo(stillMissing);
+      for (const [code, q] of fallback) map.set(code, q);
+    } catch (err) {
+      console.error('[fetchQuotes] Yahoo 也失敗:', err.message);
     }
   }
   return map;

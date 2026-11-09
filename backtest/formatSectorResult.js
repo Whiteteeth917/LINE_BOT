@@ -14,11 +14,11 @@ function fmtLots(n) {
   return `${sign}${n}張`;
 }
 
-function buildActionableBlock(c, idx) {
+function buildActionableBlock(c, idx, flowDays) {
   const flagLine = c.flags.length ? `⚠️ ${c.flags.join('、')}` : '✅ 無異常標記';
   const flowLine = c.flow
-    ? `近5日法人合計 ${fmtLots(c.flow.totalNetLots)}（外資${fmtLots(c.flow.foreignNetLots)}）`
-    : '近5日法人：無資料';
+    ? `近${flowDays}日法人合計 ${fmtLots(c.flow.totalNetLots)}（外資${fmtLots(c.flow.foreignNetLots)}）`
+    : '法人買賣超：無資料';
 
   return [
     `${idx + 1}. ${c.code} ${c.name}　現價 ${fmt(c.close)}`,
@@ -56,7 +56,7 @@ function formatSectorResult(result, keyword) {
   if (actionable.length > 0) {
     sections.push(
       `【✅ 符合技術面進場條件，可考慮操作】`,
-      ...actionable.map((c, idx) => buildActionableBlock(c, idx))
+      ...actionable.map((c, idx) => buildActionableBlock(c, idx, result.flowDays))
     );
   } else {
     sections.push('今天這個類股沒有股票符合完整的技術面進場條件，建議先觀望。');

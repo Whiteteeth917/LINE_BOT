@@ -2,34 +2,36 @@ const { fetchPrevDayOHLC } = require('./twse');
 const { calcPivotPoints, calcStopLoss } = require('./pivotPoints');
 const { loadNameMap, stockLabel } = require('./stockNames');
 const { describeFetchError } = require('./fetchError');
+const { fetchLatestBar } = require('./dailyBarSources');
 const { loadRecentDays } = require('../backtest/loadCache');
 const { backfillRecentDays } = require('../backtest/backfillHistory');
 
-// 最近一個交易日的 OHLC，依序嘗試三個來源：
-//   1. 本機行情快取（全市場一個檔案；每 10 分鐘最多補抓一次）
-//   2. 證交所 OpenAPI STOCK_DAY_ALL（openapi.twse.com.tw，一次請求拿到全部上市股票，結果暫存 10 分鐘）
-//   3. 證交所 STOCK_DAY（www.twse.com.tw，每檔一次請求，最後手段）
-// 雲端主機連 www.twse.com.tw 常常失敗（請求太密集會被暫時封鎖），不能只靠它；
-// 1、2 若都有資料，取日期較新的那份。
+// 最近一個完整交易日的 OHLC 來源（全部都要能快速失敗：LINE 回覆約 1 分鐘內就要送出）：
+//   A. 本機行情快取（全市場；背景更新，不等它）
+//   B. 證交所 OpenAPI STOCK_DAY_ALL（全市場一次請求，結果暫存 10 分鐘，失敗後 10 分鐘內不再試）
+//   C. 非證交所備援 Yahoo／FinMind／鉅亨網（逐檔，見 dailyBarSources.js）
+//   D. 證交所 STOCK_DAY（逐檔，最後手段，失敗後 10 分鐘內不再試）
+// 證交所連得上（B 成功）時：A、B 取日期較新者 → C → D。
+// 證交所連不上（B 失敗）時：快取多半也停在好幾天前，改成 C 優先 → A → D。
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const COOLDOWN_MS = 10 * 60 * 1000;
 const OPENAPI_URL = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
 
 let lastCacheRefresh = 0;
 let cacheRefreshing = null;
-let openApiMemo = { at: 0, data: null };
+let openApiMemo = { at: 0, data: null, failedAt: 0 };
 let openApiFetching = null;
+let stockDayFailedAt = 0;
 
-function refreshCacheIfStale() {
-  if (Date.now() - lastCacheRefresh < REFRESH_INTERVAL_MS) return Promise.resolve();
-  if (!cacheRefreshing) {
-    cacheRefreshing = backfillRecentDays(5)
-      .catch((err) => console.error('[levels] 行情快取更新失敗:', describeFetchError(err)))
-      .finally(() => {
-        lastCacheRefresh = Date.now();
-        cacheRefreshing = null;
-      });
-  }
-  return cacheRefreshing;
+// 背景更新快取，呼叫端不等它（證交所連不上時回補要好幾十秒才會放棄）
+function refreshCacheInBackground() {
+  if (cacheRefreshing || Date.now() - lastCacheRefresh < REFRESH_INTERVAL_MS) return;
+  cacheRefreshing = backfillRecentDays(5)
+    .catch((err) => console.error('[levels] 行情快取更新失敗:', describeFetchError(err)))
+    .finally(() => {
+      lastCacheRefresh = Date.now();
+      cacheRefreshing = null;
+    });
 }
 
 function num(s) {
@@ -39,10 +41,12 @@ function num(s) {
 
 // 回傳 { date: 'YYYYMMDD', byCode: Map } 或 null（失敗時）
 function fetchOpenApiDay() {
-  if (openApiMemo.data && Date.now() - openApiMemo.at < REFRESH_INTERVAL_MS) return Promise.resolve(openApiMemo.data);
+  const now = Date.now();
+  if (openApiMemo.data && now - openApiMemo.at < REFRESH_INTERVAL_MS) return Promise.resolve(openApiMemo.data);
+  if (now - openApiMemo.failedAt < COOLDOWN_MS) return Promise.resolve(null);
   if (!openApiFetching) {
     openApiFetching = (async () => {
-      const res = await fetch(OPENAPI_URL, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+      const res = await fetch(OPENAPI_URL, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const rows = await res.json();
       if (!Array.isArray(rows) || !rows.length) throw new Error('無資料');
@@ -53,10 +57,11 @@ function fetchOpenApiDay() {
         open: num(r.OpeningPrice), high: num(r.HighestPrice), low: num(r.LowestPrice), close: num(r.ClosingPrice),
       }]));
       const data = { date, byCode };
-      openApiMemo = { at: Date.now(), data };
+      openApiMemo = { at: Date.now(), data, failedAt: 0 };
       return data;
     })()
       .catch((err) => {
+        openApiMemo = { ...openApiMemo, failedAt: Date.now() };
         console.error('[levels] 證交所 OpenAPI 失敗:', describeFetchError(err));
         return null;
       })
@@ -65,8 +70,8 @@ function fetchOpenApiDay() {
   return openApiFetching;
 }
 
-async function loadCacheDay() {
-  await refreshCacheIfStale();
+function loadCacheDay() {
+  refreshCacheInBackground();
   const [latest] = loadRecentDays(1);
   if (!latest) return null;
   return { date: latest.date, byCode: new Map(latest.rows.map((r) => [r.code, r])) };
@@ -81,25 +86,61 @@ function isComplete(row) {
   return row && row.high != null && row.low != null && row.close != null;
 }
 
-async function getOhlc(code, sources) {
-  for (const src of sources) {
-    const row = src.byCode.get(code);
-    if (isComplete(row)) return { date: toRocDate(src.date), open: row.open, high: row.high, low: row.low, close: row.close };
+function fromMarketDay(day, code) {
+  if (!day || !day.date) return null;
+  const row = day.byCode.get(code);
+  return isComplete(row) ? { date: toRocDate(day.date), open: row.open, high: row.high, low: row.low, close: row.close } : null;
+}
+
+async function fromAlternatives(code) {
+  const bar = await fetchLatestBar(code);
+  return { date: toRocDate(bar.date), open: bar.open, high: bar.high, low: bar.low, close: bar.close, name: bar.name || null };
+}
+
+async function fromStockDay(code) {
+  if (Date.now() - stockDayFailedAt < COOLDOWN_MS) return null;
+  try {
+    return await fetchPrevDayOHLC(code);
+  } catch (err) {
+    stockDayFailedAt = Date.now();
+    throw err;
   }
-  return fetchPrevDayOHLC(code);
+}
+
+async function getOhlc(code, cacheDay, openApiDay) {
+  const errors = [];
+  const attempt = async (fn) => {
+    try {
+      return await fn();
+    } catch (err) {
+      errors.push(describeFetchError(err));
+      return null;
+    }
+  };
+
+  let ohlc = null;
+  if (openApiDay) {
+    const [first, second] = [cacheDay, openApiDay].sort((a, b) => ((b && b.date) || '').localeCompare((a && a.date) || ''));
+    ohlc = fromMarketDay(first, code) || fromMarketDay(second, code) || (await attempt(() => fromAlternatives(code)));
+  } else {
+    ohlc = (await attempt(() => fromAlternatives(code))) || fromMarketDay(cacheDay, code);
+  }
+  if (!ohlc) ohlc = await attempt(() => fromStockDay(code));
+  if (!ohlc && errors.length) throw new Error(errors[0]);
+  return ohlc;
 }
 
 async function buildLevelsForWatchlist(watchlist, stopLossPct) {
   const nameMap = loadNameMap();
-  const [cacheDay, openApiDay] = await Promise.all([loadCacheDay(), fetchOpenApiDay()]);
-  // 日期較新的來源排前面
-  const sources = [cacheDay, openApiDay].filter((s) => s && s.date).sort((a, b) => b.date.localeCompare(a.date));
+  const cacheDay = loadCacheDay();
+  const openApiDay = await fetchOpenApiDay();
 
   return Promise.all(
     watchlist.map(async (code) => {
-      const label = stockLabel(code, nameMap);
+      let label = stockLabel(code, nameMap);
       try {
-        const ohlc = await getOhlc(code, sources);
+        const ohlc = await getOhlc(code, cacheDay, openApiDay);
+        if (ohlc && ohlc.name && label === code) label = `${code} ${ohlc.name}`;
         if (!ohlc || ohlc.close == null) {
           return { code, label, error: '查無資料' };
         }

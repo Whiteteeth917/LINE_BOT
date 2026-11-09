@@ -102,9 +102,10 @@ async function buildStockCheck(code, user) {
   ].join('\n'));
 
   // 籌碼
-  const flow = flowMap.get(code);
+  const flowDays = flowMap.daysCovered || 0;
+  const flow = flowDays ? flowMap.get(code) : null;
   sections.push([
-    `【籌碼】近${recentDates.length}個交易日法人買賣超`,
+    flowDays ? `【籌碼】近${flowDays}個交易日法人買賣超` : '【籌碼】法人買賣超',
     flow
       ? `外資 ${fmtLots(flow.foreignNetLots)}｜投信 ${fmtLots(flow.trustNetLots)}｜三大法人合計 ${fmtLots(flow.totalNetLots)}`
       : '無資料',
