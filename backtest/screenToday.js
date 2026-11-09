@@ -1,5 +1,6 @@
 const { backfillRecentDays } = require('./backfillHistory');
-const { loadAllDays, dataSourceNote } = require('./loadCache');
+const { loadAllDays, loadRecentDays, dataSourceNote } = require('./loadCache');
+const { ensureHistory } = require('./yahooHistory');
 const { buildUniverse } = require('./universe');
 const { buildSeriesByCode } = require('./buildSeries');
 const { annotateSeries } = require('./indicators');
@@ -15,6 +16,7 @@ const {
 async function screenToday({ topN = 150, rsPercentile = DEFAULT_RS_PERCENTILE, maxResults = 10 } = {}) {
   await backfillRecentDays(10).catch((err) => console.error('[screenToday] 回補失敗:', err.message));
 
+  await ensureHistory(loadRecentDays, 80);
   const days = loadAllDays();
   if (days.length < 80) {
     throw new Error(`快取資料只有 ${days.length} 個交易日，太少，請先跑完整回補`);

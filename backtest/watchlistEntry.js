@@ -10,6 +10,7 @@ const {
   VOLUME_SURGE_MULTIPLE,
 } = require('./strategy');
 const { calcPivotPoints, calcStopLoss } = require('../src/pivotPoints');
+const { ensureHistory } = require('./yahooHistory');
 
 // 季線走揚要比較 5 日前的 60 日均線（需第 65 根K棒），再多留一點餘裕；
 // 只讀最近這幾天的快取，避免把整份歷史載入記憶體（雲端免費方案記憶體很小）。
@@ -21,6 +22,7 @@ const MIN_BARS = 66;
 async function checkWatchlistEntry(codes, { stopLossPct = 20, topN = 150, rsPercentile = DEFAULT_RS_PERCENTILE } = {}) {
   await backfillRecentDays(10).catch((err) => console.error('[watchlistEntry] 回補失敗:', err.message));
 
+  await ensureHistory(loadRecentDays, MIN_BARS);
   const days = loadRecentDays(LOOKBACK_DAYS);
   if (days.length < MIN_BARS) {
     throw new Error(`快取資料只有 ${days.length} 個交易日，不足以計算季線，請稍後再試`);

@@ -6,6 +6,7 @@ const { buildUniverse } = require('./universe');
 const { buildSeriesByCode } = require('./buildSeries');
 const { runBacktest } = require('./engine');
 const { summarize } = require('./report');
+const { ensureHistory } = require('./yahooHistory');
 
 // 讀最近這麼多個交易日；前 WARMUP_BARS 天只用來算均線（季線走揚要 65 根K棒），不計入訊號期間
 const LOAD_DAYS = 200;
@@ -13,7 +14,8 @@ const WARMUP_BARS = 65;
 
 let memo = { latestDate: null, result: null };
 
-function computeRecentPerformance() {
+async function computeRecentPerformance() {
+  await ensureHistory(loadRecentDays, WARMUP_BARS + 10);
   const days = loadRecentDays(LOAD_DAYS);
   if (days.length < WARMUP_BARS + 10) {
     throw new Error(`快取資料只有 ${days.length} 個交易日，不足以統計戰績，請稍後再試`);

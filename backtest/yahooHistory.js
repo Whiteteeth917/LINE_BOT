@@ -12,7 +12,8 @@ const { isCompletedBarDate, taipeiNow, taipeiDateOf } = require('../src/dailyBar
 const { describeFetchError } = require('../src/fetchError');
 
 const META_FILE = path.join(YAHOO_DIR, 'meta.json');
-const CONCURRENCY = 5;
+// 雲端主機的 IP 容易被限流，同時請求數壓低一點
+const CONCURRENCY = 3;
 const MIN_SUCCESS = 100; // 抓到的股票太少就不要覆蓋舊資料
 const MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
@@ -28,9 +29,19 @@ function loadNames() {
   }
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function fetchYearBars(code) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${code}.TW`)}?range=1y&interval=1d`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+  let res;
+  // 被限流（429）時等一下再試，最多 3 次
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+    if (res.status !== 429) break;
+    await sleep(2000 * (attempt + 1));
+  }
   if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
   const r = (await res.json())?.chart?.result?.[0];
   const q = r?.indicators?.quote?.[0];
@@ -116,18 +127,23 @@ async function buildYahooHistory() {
 }
 
 let building = null;
+// 最近一次建立的結果（給 /healthz 與錯誤訊息用）
+const status = { lastAttemptAt: null, lastError: null };
 // 過期才重抓；同時間只跑一次
 function refreshYahooHistoryIfStale() {
   if (!isStale()) return Promise.resolve(readMeta());
   if (!building) {
     console.log('[yahooHistory] 開始從 Yahoo 建立歷史行情備援');
     const started = Date.now();
+    status.lastAttemptAt = new Date().toISOString();
     building = buildYahooHistory()
       .then((meta) => {
+        status.lastError = null;
         console.log(`[yahooHistory] 完成：${meta.stocks} 檔、${meta.days} 天（到 ${meta.latestDate}），${Math.round((Date.now() - started) / 1000)} 秒`);
         return meta;
       })
       .catch((err) => {
+        status.lastError = err.message;
         console.error('[yahooHistory] 失敗:', err.message);
         return null;
       })
@@ -136,4 +152,26 @@ function refreshYahooHistoryIfStale() {
   return building;
 }
 
-module.exports = { buildYahooHistory, refreshYahooHistoryIfStale, readMeta, isStale };
+// 給選股／進場條件／戰績呼叫：歷史行情不夠時，當場用 Yahoo 補（約 15 秒）。
+// 剛失敗過 3 分鐘內不重試，避免每個指令都重打一次 Yahoo。
+const RETRY_AFTER_FAIL_MS = 3 * 60 * 1000;
+async function ensureHistory(loadRecentDays, minDays) {
+  if (loadRecentDays(minDays).length >= minDays) return;
+  const recentFail = status.lastError && status.lastAttemptAt && Date.now() - new Date(status.lastAttemptAt).getTime() < RETRY_AFTER_FAIL_MS;
+  if (!recentFail) await refreshYahooHistoryIfStale();
+  const have = loadRecentDays(minDays).length;
+  if (have >= minDays) return;
+  const err = new Error(
+    status.lastError
+      ? `歷史行情不足（${have} 天），證交所連不上，Yahoo 備援也失敗：${status.lastError}`
+      : `歷史行情還在下載中（目前 ${have} 天），請約 1 分鐘後再試`
+  );
+  err.userMessage = err.message;
+  throw err;
+}
+
+function getStatus() {
+  return { ...status, building: Boolean(building), meta: readMeta() };
+}
+
+module.exports = { buildYahooHistory, refreshYahooHistoryIfStale, readMeta, isStale, ensureHistory, getStatus };

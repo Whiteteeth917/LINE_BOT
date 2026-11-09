@@ -21,7 +21,7 @@ const { buildCandlestickUrls } = require('./candlestickChart');
 const { buildChartData, renderChartPage, renderNotFound, isValidCode } = require('./chartPage');
 const { loadNameMap, stockLabel } = require('./stockNames');
 const { backfillRecentDays } = require('../backtest/backfillHistory');
-const { refreshYahooHistoryIfStale, readMeta: readYahooMeta } = require('../backtest/yahooHistory');
+const { refreshYahooHistoryIfStale, readMeta: readYahooMeta, getStatus: yahooStatus } = require('../backtest/yahooHistory');
 const { checkWatchlistEntry } = require('../backtest/watchlistEntry');
 const { formatEntryConditions } = require('../backtest/formatEntryConditions');
 const { addPosition, removePosition, buildPositionsReport, fmt, fmtLots, fmtMoney, fmtSignedPct, SHARES_PER_LOT } = require('./positions');
@@ -236,11 +236,11 @@ async function handleEvent(event) {
 
   if (['戰績', '績效'].includes(text)) {
     try {
-      const message = formatRecentPerformance(computeRecentPerformance());
+      const message = formatRecentPerformance(await computeRecentPerformance());
       return client.replyMessage(event.replyToken, { type: 'text', text: message });
     } catch (err) {
       console.error('[recentPerformance] 失敗:', err);
-      return client.replyMessage(event.replyToken, { type: 'text', text: `戰績統計失敗：${err.message}` });
+      return client.replyMessage(event.replyToken, { type: 'text', text: `戰績統計失敗：${err.userMessage || '請稍後再試一次'}` });
     }
   }
 
@@ -352,7 +352,7 @@ async function handleEvent(event) {
       console.error('[screenToday] 失敗:', err);
       return client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '選股資料抓取失敗，請稍後再試一次。',
+        text: `選股資料抓取失敗：${err.userMessage || '請稍後再試一次。'}`,
       });
     }
   }
@@ -398,7 +398,7 @@ async function handleEvent(event) {
       return client.replyMessage(event.replyToken, { type: 'text', text: message });
     } catch (err) {
       console.error('[watchlistEntry] 失敗:', err);
-      return client.replyMessage(event.replyToken, { type: 'text', text: '進場條件資料抓取失敗，請稍後再試一次。' });
+      return client.replyMessage(event.replyToken, { type: 'text', text: `進場條件資料抓取失敗：${err.userMessage || '請稍後再試一次。'}` });
     }
   }
 
@@ -769,8 +769,20 @@ function warmupCache() {
 }
 
 app.get('/healthz', (_req, res) => {
-  const yahoo = readYahooMeta();
-  res.json({ ok: true, cacheReady: warmupDone, yahooBackup: yahoo ? { builtAt: yahoo.builtAt, stocks: yahoo.stocks, latestDate: yahoo.latestDate } : null });
+  const y = yahooStatus();
+  res.json({
+    ok: true,
+    cacheReady: warmupDone,
+    yahooBackup: {
+      ready: Boolean(y.meta),
+      building: y.building,
+      builtAt: y.meta ? y.meta.builtAt : null,
+      stocks: y.meta ? y.meta.stocks : 0,
+      latestDate: y.meta ? y.meta.latestDate : null,
+      lastAttemptAt: y.lastAttemptAt,
+      lastError: y.lastError,
+    },
+  });
 });
 
 // 診斷用：確認在部署環境裡報價來源是否可用、實際用的是哪個來源（只回傳公開行情，不含任何設定）
