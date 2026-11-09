@@ -779,25 +779,55 @@ app.get('/diag/quotes', async (_req, res) => {
 // 診斷用：從伺服器所在位置逐一測試每個外部資料來源能不能連（只打公開行情網址，不含任何設定或使用者資料）
 app.get('/diag/sources', async (_req, res) => {
   const { describeFetchError } = require('./fetchError');
-  const probes = {
-    'www.twse.com.tw（K線快取、支撐壓力備援）': 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&stockNo=2330',
-    'openapi.twse.com.tw（支撐壓力、基本面）': 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
-    'mis.twse.com.tw（個股報價備援）': 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_2330.tw&json=1&delay=0',
-    'mis.taifex.com.tw（台指期備援）': 'https://mis.taifex.com.tw/futures/api/getQuoteList',
-    'scanner.tradingview.com（報價主要來源）': 'https://scanner.tradingview.com/global/scan',
-  };
-  const results = await Promise.all(Object.entries(probes).map(async ([name, url]) => {
+  const since = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
+  // expect：回應開頭要出現的字串，用來確認「真的拿到資料」而不只是連得上。
+  // 沒有 expect 的（期交所、TradingView 要求 POST）只檢查連線層，GET 回 4xx 也算連得上。
+  const probes = [
+    { group: '目前使用中', name: 'www.twse.com.tw（K線快取、支撐壓力備援）', url: 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&stockNo=2330', expect: '"stat"' },
+    { group: '目前使用中', name: 'openapi.twse.com.tw（支撐壓力、基本面）', url: 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL', expect: '"Code"' },
+    { group: '目前使用中', name: 'mis.twse.com.tw（個股報價備援）', url: 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_2330.tw&json=1&delay=0', expect: 'msgArray' },
+    { group: '目前使用中', name: 'mis.taifex.com.tw（台指期備援）', url: 'https://mis.taifex.com.tw/futures/api/getQuoteList' },
+    { group: '目前使用中', name: 'scanner.tradingview.com（報價主要來源）', url: 'https://scanner.tradingview.com/global/scan' },
+    { group: '備選（逐檔）', name: 'Yahoo Finance query1', url: 'https://query1.finance.yahoo.com/v8/finance/chart/2330.TW?range=5d&interval=1d', expect: '"2330.TW"' },
+    { group: '備選（逐檔）', name: 'Yahoo Finance query2', url: 'https://query2.finance.yahoo.com/v8/finance/chart/2330.TW?range=5d&interval=1d', expect: '"2330.TW"' },
+    { group: '備選（逐檔）', name: 'FinMind', url: `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=2330&start_date=${since}`, expect: '"success"' },
+    { group: '備選（逐檔）', name: '鉅亨網 cnyes', url: 'https://ws.api.cnyes.com/ws/api/v1/charting/history?symbol=TWS:2330:STOCK&resolution=D&quote=1', expect: '"ok"' },
+    { group: '備選（全市場）', name: '櫃買中心 TPEx OpenAPI', url: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes', expect: 'SecuritiesCompanyCode' },
+  ];
+
+  // 只讀前 64KB 就夠判斷（櫃買中心那份完整資料有好幾 MB，不必整份下載）
+  async function readHead(r, limit = 64 * 1024) {
+    const reader = r.body.getReader();
+    const chunks = [];
+    let size = 0;
+    while (size < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+    }
+    reader.cancel().catch(() => {});
+    return Buffer.concat(chunks).toString('utf8');
+  }
+
+  const results = await Promise.all(probes.map(async ({ group, name, url, expect }) => {
     const started = Date.now();
     try {
       const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
-      await r.arrayBuffer();
-      // 期交所與 TradingView 的端點要求 POST，GET 回 4xx 也代表「連得上」，這裡只檢查連線層
-      return [name, { reachable: true, status: r.status, ms: Date.now() - started }];
+      const head = await readHead(r);
+      const out = { group, name, reachable: true, status: r.status, ms: Date.now() - started };
+      if (expect) out.dataOk = r.ok && head.includes(expect);
+      return out;
     } catch (err) {
-      return [name, { reachable: false, error: describeFetchError(err), ms: Date.now() - started }];
+      return { group, name, reachable: false, error: describeFetchError(err), ms: Date.now() - started };
     }
   }));
-  res.json({ checkedAt: new Date().toISOString(), cacheReady: warmupDone, results: Object.fromEntries(results) });
+
+  const summary = results.map((x) => {
+    const ok = x.reachable && x.dataOk !== false && !(x.status === 429);
+    return `${ok ? '✅' : '❌'} [${x.group}] ${x.name}`;
+  });
+  res.json({ checkedAt: new Date().toISOString(), cacheReady: warmupDone, summary, results });
 });
 
 const port = process.env.PORT || 3000;
